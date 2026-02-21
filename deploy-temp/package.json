@@ -1,0 +1,12 @@
+{
+  "name": "guandan-game",
+  "version": "1.0.0",
+  "description": "三人惯蛋网页游戏",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.14.0"
+  }
+}
