@@ -43,39 +43,32 @@
             </div>
 
             <div class="game-table">
-                <div class="player-area top-player">
+                <div class="player-area seat-left">
                     <div class="player-info">
-                        <span id="player2-name">玩家2</span>
-                        <span id="player2-cards" class="card-count">0张</span>
+                        <span id="seat-left-name">等待玩家...</span>
+                        <span id="seat-left-count" class="card-count">0张</span>
                     </div>
-                    <div id="player2-cards-area" class="cards-area"></div>
-                </div>
-
-                <div class="player-area left-player">
-                    <div class="player-info">
-                        <span id="player1-name">玩家1</span>
-                        <span id="player1-cards" class="card-count">0张</span>
-                    </div>
-                    <div id="player1-cards-area" class="cards-area"></div>
+                    <div id="seat-left-cards" class="cards-area"></div>
                 </div>
 
                 <div class="play-area">
+                    <div id="last-play-info" class="last-play-info"></div>
                     <div id="played-cards" class="played-cards"></div>
                     <div id="game-message" class="game-message"></div>
                 </div>
 
-                <div class="player-area right-player">
+                <div class="player-area seat-right">
                     <div class="player-info">
-                        <span id="player3-name">玩家3</span>
-                        <span id="player3-cards" class="card-count">0张</span>
+                        <span id="seat-right-name">等待玩家...</span>
+                        <span id="seat-right-count" class="card-count">0张</span>
                     </div>
-                    <div id="player3-cards-area" class="cards-area"></div>
+                    <div id="seat-right-cards" class="cards-area"></div>
                 </div>
 
-                <div class="player-area bottom-player">
+                <div class="player-area seat-bottom">
                     <div class="player-info">
-                        <span id="current-player-name">我</span>
-                        <span id="my-cards" class="card-count">0张</span>
+                        <span id="me-name">我</span>
+                        <span id="me-count" class="card-count">0张</span>
                     </div>
                     <div id="my-cards-area" class="cards-area"></div>
                     <div class="action-buttons">

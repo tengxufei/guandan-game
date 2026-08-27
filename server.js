@@ -1,5 +1,8 @@
 const WebSocket = require('ws');
 const http = require('http');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
 
 const suits = ['♠', '♥', '♣', '♦'];
 const ranks = ['3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A', '2'];
@@ -31,7 +34,9 @@ class GameRoom {
         const index = this.players.indexOf(player);
         if (index > -1) {
             this.players.splice(index, 1);
-            this.reassignPlayerIds();
+            if (!this.gameState) {
+                this.reassignPlayerIds();
+            }
         }
     }
 
@@ -217,7 +222,7 @@ class GameRoom {
         if (cards.length === 3 && ranks[0] === ranks[2]) return 'triple';
         if (cards.length === 4 && ranks[0] === ranks[3]) return 'bomb';
         if (cards.length === 4 && (ranks[0] === ranks[2] || ranks[1] === ranks[3])) return 'triple_single';
-        if (cards.length === 5 && this.isStraight(ranks)) return 'straight';
+        if (cards.length >= 5 && this.isStraight(ranks)) return 'straight';
         if (cards.length === 5 && ((ranks[0] === ranks[2] && ranks[3] === ranks[4]) || 
             (ranks[0] === ranks[1] && ranks[2] === ranks[4]))) return 'triple_pair';
         
@@ -256,7 +261,38 @@ class Player {
 const rooms = new Map();
 const players = new Map();
 
-const server = http.createServer();
+const STATIC_DIR = __dirname;
+const MIME_TYPES = {
+    '.html': 'text/html; charset=utf-8',
+    '.js': 'text/javascript; charset=utf-8',
+    '.css': 'text/css; charset=utf-8',
+};
+
+function serveStatic(req, res) {
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    const requestedPath = url.pathname === '/' ? '/index.html' : url.pathname;
+    const safePath = path.normalize(requestedPath).replace(/^(\.\.[/\\])+/, '');
+    const filePath = path.join(STATIC_DIR, safePath);
+
+    if (!filePath.startsWith(STATIC_DIR)) {
+        res.writeHead(403);
+        res.end('Forbidden');
+        return;
+    }
+
+    fs.readFile(filePath, (err, data) => {
+        if (err) {
+            res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+            res.end('Not found');
+            return;
+        }
+        const ext = path.extname(filePath);
+        res.writeHead(200, { 'Content-Type': MIME_TYPES[ext] || 'application/octet-stream' });
+        res.end(data);
+    });
+}
+
+const server = http.createServer(serveStatic);
 const wss = new WebSocket.Server({ server });
 
 wss.on('connection', (ws, req) => {
@@ -378,8 +414,14 @@ function handleLeaveRoom(player) {
 
     const room = rooms.get(player.roomId);
     if (room) {
+        const wasPlaying = room.gameState && room.gameState.status === 'playing';
         room.removePlayer(player);
         broadcastToRoom(room, { type: 'player_left', playerName: player.name });
+
+        if (wasPlaying && room.players.length < 3) {
+            room.gameState = null;
+            broadcastToRoom(room, { type: 'game_aborted', message: `${player.name} 离开了，游戏已中止` });
+        }
 
         if (room.players.length === 0) {
             console.log('房间为空，删除房间:', player.roomId);
@@ -497,8 +539,14 @@ function handlePlayerDisconnect(player) {
     if (player.roomId) {
         const room = rooms.get(player.roomId);
         if (room) {
+            const wasPlaying = room.gameState && room.gameState.status === 'playing';
             room.removePlayer(player);
             broadcastToRoom(room, { type: 'player_left', playerName: player.name });
+
+            if (wasPlaying && room.players.length < 3) {
+                room.gameState = null;
+                broadcastToRoom(room, { type: 'game_aborted', message: `${player.name} 离开了，游戏已中止` });
+            }
 
             if (room.players.length === 0) {
                 console.log('房间为空，删除房间:', player.roomId);
@@ -536,7 +584,31 @@ function generateRoomId() {
     return Math.random().toString(36).substring(2, 8).toUpperCase();
 }
 
+function getLocalIPs() {
+    const interfaces = os.networkInterfaces();
+    const ips = [];
+    for (const name of Object.keys(interfaces)) {
+        for (const iface of interfaces[name] || []) {
+            if (iface.family === 'IPv4' && !iface.internal) {
+                ips.push(iface.address);
+            }
+        }
+    }
+    return ips;
+}
+
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
     console.log(`游戏服务器运行在端口 ${PORT}`);
+    console.log('');
+    console.log('======================================');
+    console.log('  家人在同一WiFi下，用手机/电脑浏览器打开:');
+    const ips = getLocalIPs();
+    if (ips.length === 0) {
+        console.log(`  http://localhost:${PORT}`);
+    } else {
+        ips.forEach(ip => console.log(`  http://${ip}:${PORT}`));
+    }
+    console.log('======================================');
+    console.log('');
 });
