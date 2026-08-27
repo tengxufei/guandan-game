@@ -1,10 +1,13 @@
 {
   "name": "guandan-game",
-  "version": "1.0.0",
-  "description": "三人惯蛋网页游戏",
+  "version": "2.0.0",
+  "description": "三人掼蛋网页游戏（局域网对战）",
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js"
+    "dev": "node server.js",
+    "test": "node test/cardLogic.test.js && node test/gameFlow.test.js",
+    "test:rules": "node test/cardLogic.test.js",
+    "test:flow": "node test/gameFlow.test.js"
   },
   "dependencies": {
     "ws": "^8.14.0"

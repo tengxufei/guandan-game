@@ -4,242 +4,283 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-const suits = ['♠', '♥', '♣', '♦'];
-const ranks = ['3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A', '2'];
-const rankValues = {
-    '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, '9': 9, '10': 10,
-    'J': 11, 'Q': 12, 'K': 13, 'A': 14, '2': 15, '小王': 16, '大王': 17
-};
+const {
+    LEVEL_ORDER, SHAPE_NAMES,
+    createDoubleDeck, shuffle, isWildCard, singleCardRank,
+    detectCombo, canBeat,
+} = require('./cardLogic');
+
+const PLAYERS_PER_ROOM = 3;
+const CARDS_PER_PLAYER = 36; // 108 / 3
+
+function cardKey(card) {
+    return `${card.suit}${card.rank}`;
+}
 
 class GameRoom {
     constructor(roomId) {
         this.roomId = roomId;
         this.players = [];
-        this.gameState = null;
-        this.currentPlayer = 0;
-        this.lastPlayedCards = null;
-        this.lastPlayer = null;
+        this.hostId = null;
+        this.level = '2';
+        this.status = 'waiting'; // waiting | playing | finished
+        this.currentIndex = 0;
+        this.lastCombo = null;
+        this.lastPlayerId = null;
         this.passCount = 0;
+        this.finishOrder = [];
+        this.history = [];
     }
 
     addPlayer(player) {
-        if (this.players.length >= 3) return false;
+        if (this.players.length >= PLAYERS_PER_ROOM) return false;
+        if (this.status === 'playing') return false;
         this.players.push(player);
         player.roomId = this.roomId;
-        player.playerId = this.players.length;
+        player.playerId = this.nextPlayerId();
+        player.cards = [];
+        player.finished = false;
+        if (this.hostId === null) this.hostId = player.playerId;
         return true;
+    }
+
+    nextPlayerId() {
+        const used = new Set(this.players.map(p => p.playerId));
+        for (let i = 1; i <= PLAYERS_PER_ROOM; i++) {
+            if (!used.has(i)) return i;
+        }
+        return this.players.length;
     }
 
     removePlayer(player) {
         const index = this.players.indexOf(player);
-        if (index > -1) {
-            this.players.splice(index, 1);
-            if (!this.gameState) {
-                this.reassignPlayerIds();
-            }
+        if (index > -1) this.players.splice(index, 1);
+        if (player.playerId === this.hostId) {
+            this.hostId = this.players.length ? this.players[0].playerId : null;
         }
-    }
-
-    reassignPlayerIds() {
-        this.players.forEach((player, index) => {
-            player.playerId = index + 1;
-        });
     }
 
     isFull() {
-        return this.players.length === 3;
+        return this.players.length === PLAYERS_PER_ROOM;
+    }
+
+    getPlayer(playerId) {
+        return this.players.find(p => p.playerId === playerId);
     }
 
     startGame() {
-        const deck = this.createDeck();
-        this.dealCards(deck);
-        this.currentPlayer = 0;
-        this.lastPlayedCards = null;
-        this.lastPlayer = null;
+        const deck = shuffle(createDoubleDeck());
+        this.players.forEach((player, i) => {
+            player.cards = deck.slice(i * CARDS_PER_PLAYER, (i + 1) * CARDS_PER_PLAYER);
+            sortHand(player.cards, this.level);
+            player.finished = false;
+        });
+        this.status = 'playing';
+        this.currentIndex = 0;
+        this.lastCombo = null;
+        this.lastPlayerId = null;
         this.passCount = 0;
-        this.gameState = {
-            status: 'playing',
+        this.finishOrder = [];
+        this.history = [];
+    }
+
+    currentPlayer() {
+        return this.players[this.currentIndex];
+    }
+
+    publicState() {
+        return {
+            roomId: this.roomId,
+            status: this.status,
+            level: this.level,
+            hostId: this.hostId,
+            currentPlayerId: this.status === 'playing' && this.currentPlayer() ? this.currentPlayer().playerId : null,
+            lastPlayerId: this.lastPlayerId,
+            lastCombo: this.lastCombo ? {
+                shapeName: SHAPE_NAMES[this.lastCombo.shapeType] || this.lastCombo.shapeType,
+                cards: this.lastCombo.cards,
+                playerId: this.lastPlayerId,
+            } : null,
+            finishOrder: this.finishOrder,
             players: this.players.map(p => ({
                 playerId: p.playerId,
                 name: p.name,
-                cardCount: p.cards.length
-            }))
+                cardCount: p.cards.length,
+                finished: p.finished,
+                isHost: p.playerId === this.hostId,
+            })),
         };
-        return this.gameState;
     }
 
-    createDeck() {
-        const deck = [];
-        for (const suit of suits) {
-            for (const rank of ranks) {
-                deck.push({ suit, rank });
+    // 找到下一位还没出完牌的玩家
+    advanceTurn() {
+        for (let step = 1; step <= PLAYERS_PER_ROOM; step++) {
+            const idx = (this.currentIndex + step) % this.players.length;
+            if (!this.players[idx].finished) {
+                this.currentIndex = idx;
+                return;
             }
         }
-        deck.push({ suit: '🃏', rank: '小王' });
-        deck.push({ suit: '🃏', rank: '大王' });
-        return this.shuffle(deck);
     }
 
-    shuffle(array) {
-        for (let i = array.length - 1; i > 0; i--) {
-            const j = Math.floor(Math.random() * (i + 1));
-            [array[i], array[j]] = [array[j], array[i]];
+    activePlayerCount() {
+        return this.players.filter(p => !p.finished).length;
+    }
+
+    playCards(playerId, requestedCards) {
+        if (this.status !== 'playing') {
+            return { error: '游戏尚未开始' };
         }
-        return array;
-    }
+        const player = this.getPlayer(playerId);
+        if (!player) return { error: '你不在这个房间' };
+        if (player.finished) return { error: '你已经出完牌了' };
+        if (this.currentPlayer().playerId !== playerId) return { error: '还没轮到你出牌' };
+        if (!Array.isArray(requestedCards) || requestedCards.length === 0) {
+            return { error: '请选择要出的牌' };
+        }
 
-    dealCards(deck) {
-        const cardsPerPlayer = Math.floor(deck.length / 3);
-        this.players.forEach((player, index) => {
-            player.cards = deck.slice(index * cardsPerPlayer, (index + 1) * cardsPerPlayer);
-            this.sortCards(player.cards);
+        // 校验这些牌确实在手上（按花色+点数逐张核销，防止重复使用同一张）
+        const handPool = new Map();
+        for (const card of player.cards) {
+            const key = cardKey(card);
+            handPool.set(key, (handPool.get(key) || 0) + 1);
+        }
+        const normalized = [];
+        for (const card of requestedCards) {
+            if (!card || typeof card.suit !== 'string' || typeof card.rank !== 'string') {
+                return { error: '出牌数据有误' };
+            }
+            const key = cardKey(card);
+            const available = handPool.get(key) || 0;
+            if (available <= 0) return { error: '你手里没有这些牌' };
+            handPool.set(key, available - 1);
+            normalized.push({ suit: card.suit, rank: card.rank });
+        }
+
+        const combo = detectCombo(normalized, this.level);
+        if (!combo) return { error: '这不是有效的牌型' };
+        if (!canBeat(combo, this.lastCombo)) {
+            return { error: this.lastCombo ? '你的牌压不过上家' : '出牌无效' };
+        }
+
+        // 从手牌中移除（每张只移除一次）
+        const toRemove = new Map();
+        for (const card of normalized) {
+            const key = cardKey(card);
+            toRemove.set(key, (toRemove.get(key) || 0) + 1);
+        }
+        player.cards = player.cards.filter(card => {
+            const key = cardKey(card);
+            const remaining = toRemove.get(key) || 0;
+            if (remaining > 0) {
+                toRemove.set(key, remaining - 1);
+                return false;
+            }
+            return true;
         });
-    }
 
-    sortCards(cards) {
-        cards.sort((a, b) => rankValues[b.rank] - rankValues[a.rank]);
-    }
-
-    playCards(playerId, cards) {
-        const player = this.players.find(p => p.playerId === playerId);
-        if (!player || playerId !== this.currentPlayer + 1) {
-            return { success: false, message: '不是你的回合' };
-        }
-
-        if (!this.isValidPlay(cards)) {
-            return { success: false, message: '无效的出牌' };
-        }
-
-        if (!this.canPlayCards(cards)) {
-            return { success: false, message: '你的牌不能大过上家' };
-        }
-
-        player.cards = player.cards.filter(c => 
-            !cards.some(played => played.suit === c.suit && played.rank === c.rank)
-        );
-
-        this.lastPlayedCards = cards;
-        this.lastPlayer = playerId;
+        this.lastCombo = { ...combo, cards: normalized };
+        this.lastPlayerId = playerId;
         this.passCount = 0;
-        this.nextTurn();
+        this.history.push({ playerId, cards: normalized, shapeType: combo.shapeType });
 
-        this.updateGameState();
-
+        let justFinished = false;
         if (player.cards.length === 0) {
-            return { success: true, winner: player.name, gameEnded: true };
+            player.finished = true;
+            this.finishOrder.push(playerId);
+            justFinished = true;
         }
 
-        return { success: true };
+        if (this.activePlayerCount() <= 1) {
+            this.players.forEach(p => {
+                if (!p.finished) {
+                    p.finished = true;
+                    this.finishOrder.push(p.playerId);
+                }
+            });
+            this.finishGame();
+            return { ok: true, combo, cards: normalized, justFinished, gameOver: true };
+        }
+
+        this.advanceTurn();
+        return { ok: true, combo, cards: normalized, justFinished };
     }
 
     pass(playerId) {
-        if (playerId !== this.currentPlayer + 1) {
-            return { success: false, message: '不是你的回合' };
-        }
-
-        if (!this.lastPlayedCards) {
-            return { success: false, message: '你是首家，不能不出' };
-        }
+        if (this.status !== 'playing') return { error: '游戏尚未开始' };
+        const player = this.getPlayer(playerId);
+        if (!player) return { error: '你不在这个房间' };
+        if (player.finished) return { error: '你已经出完牌了' };
+        if (this.currentPlayer().playerId !== playerId) return { error: '还没轮到你' };
+        if (!this.lastCombo) return { error: '你是本轮首家，必须出牌' };
 
         this.passCount++;
-        this.nextTurn();
+        this.advanceTurn();
 
-        if (this.passCount >= 2) {
-            this.lastPlayedCards = null;
-            this.lastPlayer = null;
+        // 本轮还剩几个人需要表态：出牌那位如果还没走完，他自己不用应自己的牌。
+        // 如果出牌那位已经出完牌走人了，剩下的人全部过牌就该开新一轮，
+        // 否则轮转永远回不到他身上，会一直卡在互相过牌。
+        const lastPlayer = this.lastPlayerId ? this.getPlayer(this.lastPlayerId) : null;
+        const lastStillActive = !!(lastPlayer && !lastPlayer.finished);
+        const needed = Math.max(1, this.activePlayerCount() - (lastStillActive ? 1 : 0));
+
+        let newRound = false;
+        if (this.passCount >= needed) {
+            this.lastCombo = null;
             this.passCount = 0;
+            newRound = true;
         }
-
-        return { success: true };
+        return { ok: true, newRound };
     }
 
-    isValidPlay(cards) {
-        if (cards.length === 0) return false;
-
-        const cardRanks = cards.map(c => rankValues[c.rank]);
-        cardRanks.sort((a, b) => a - b);
-
-        const isSingle = cards.length === 1;
-        const isPair = cards.length === 2 && cardRanks[0] === cardRanks[1];
-        const isTriple = cards.length === 3 && cardRanks[0] === cardRanks[2];
-        const isTripleWithSingle = cards.length === 4 && 
-            (cardRanks[0] === cardRanks[2] || cardRanks[1] === cardRanks[3]);
-        const isTripleWithPair = cards.length === 5 && 
-            ((cardRanks[0] === cardRanks[2] && cardRanks[3] === cardRanks[4]) ||
-             (cardRanks[0] === cardRanks[1] && cardRanks[2] === cardRanks[4]));
-        const isStraight = cards.length >= 5 && this.isStraight(cardRanks);
-        const isBomb = cards.length === 4 && cardRanks[0] === cardRanks[3];
-        const isRocket = cards.length === 2 && 
-            cards.some(c => c.rank === '小王') && cards.some(c => c.rank === '大王');
-
-        return isSingle || isPair || isTriple || isTripleWithSingle || 
-               isTripleWithPair || isStraight || isBomb || isRocket;
-    }
-
-    isStraight(ranks) {
-        for (let i = 1; i < ranks.length; i++) {
-            if (ranks[i] - ranks[i-1] !== 1) return false;
+    finishGame() {
+        this.status = 'finished';
+        this.lastCombo = null;
+        // 头游所在名次决定升几级：头游升3级听着太快，这里用常见的三人简化规则：
+        // 头游升2级，二游升1级，末游不升。
+        const winnerId = this.finishOrder[0];
+        const winner = this.getPlayer(winnerId);
+        const upgrade = 2;
+        const currentIdx = LEVEL_ORDER.indexOf(this.level);
+        const nextIdx = currentIdx + upgrade;
+        this.lastResult = {
+            finishOrder: this.finishOrder.slice(),
+            winnerName: winner ? winner.name : '',
+            fromLevel: this.level,
+            upgrade,
+        };
+        if (nextIdx >= LEVEL_ORDER.length) {
+            this.lastResult.matchOver = true;
+            this.lastResult.toLevel = 'A';
+            this.level = 'A';
+        } else {
+            this.level = LEVEL_ORDER[nextIdx];
+            this.lastResult.toLevel = this.level;
         }
-        return ranks[0] <= 10 && ranks[ranks.length - 1] <= 14;
     }
 
-    canPlayCards(cards) {
-        if (!this.lastPlayedCards) return true;
-
-        const lastRanks = this.lastPlayedCards.map(c => rankValues[c.rank]);
-        const currentRanks = cards.map(c => rankValues[c.rank]);
-
-        const isBomb = cards.length === 4 && currentRanks[0] === currentRanks[3];
-        const isRocket = cards.length === 2 && 
-            cards.some(c => c.rank === '小王') && cards.some(c => c.rank === '大王');
-
-        const lastIsBomb = this.lastPlayedCards.length === 4 && 
-            lastRanks[0] === lastRanks[3];
-        const lastIsRocket = this.lastPlayedCards.length === 2 && 
-            this.lastPlayedCards.some(c => c.rank === '小王') && 
-            this.lastPlayedCards.some(c => c.rank === '大王');
-
-        if (isRocket) return true;
-        if (isBomb && !lastIsBomb && !lastIsRocket) return true;
-        if (isBomb && lastIsBomb) return currentRanks[0] > lastRanks[0];
-
-        if (cards.length !== this.lastPlayedCards.length) return false;
-
-        const cardType = this.getCardType(cards);
-        const lastType = this.getCardType(this.lastPlayedCards);
-
-        if (cardType !== lastType) return false;
-
-        return currentRanks[0] > lastRanks[0];
+    resetForNextRound() {
+        this.status = 'waiting';
+        this.lastCombo = null;
+        this.lastPlayerId = null;
+        this.passCount = 0;
+        this.finishOrder = [];
+        this.history = [];
+        this.players.forEach(p => {
+            p.cards = [];
+            p.finished = false;
+        });
     }
+}
 
-    getCardType(cards) {
-        const ranks = cards.map(c => rankValues[c.rank]).sort((a, b) => a - b);
-        
-        if (cards.length === 1) return 'single';
-        if (cards.length === 2 && ranks[0] === ranks[1]) return 'pair';
-        if (cards.length === 2 && ranks.includes(16) && ranks.includes(17)) return 'rocket';
-        if (cards.length === 3 && ranks[0] === ranks[2]) return 'triple';
-        if (cards.length === 4 && ranks[0] === ranks[3]) return 'bomb';
-        if (cards.length === 4 && (ranks[0] === ranks[2] || ranks[1] === ranks[3])) return 'triple_single';
-        if (cards.length >= 5 && this.isStraight(ranks)) return 'straight';
-        if (cards.length === 5 && ((ranks[0] === ranks[2] && ranks[3] === ranks[4]) || 
-            (ranks[0] === ranks[1] && ranks[2] === ranks[4]))) return 'triple_pair';
-        
-        return 'unknown';
-    }
-
-    nextTurn() {
-        this.currentPlayer = (this.currentPlayer + 1) % 3;
-    }
-
-    updateGameState() {
-        this.gameState.players = this.players.map(p => ({
-            playerId: p.playerId,
-            name: p.name,
-            cardCount: p.cards.length
-        }));
-    }
+// 手牌排序：级牌和王排在最前，其余按点数从大到小
+function sortHand(cards, level) {
+    cards.sort((a, b) => {
+        const diff = singleCardRank(b, level) - singleCardRank(a, level);
+        if (diff !== 0) return diff;
+        if (a.suit === b.suit) return 0;
+        return a.suit < b.suit ? -1 : 1;
+    });
 }
 
 class Player {
@@ -249,10 +290,11 @@ class Player {
         this.playerId = null;
         this.roomId = null;
         this.cards = [];
+        this.finished = false;
     }
 
     send(data) {
-        if (this.ws.readyState === 1) {
+        if (this.ws.readyState === WebSocket.OPEN) {
             this.ws.send(JSON.stringify(data));
         }
     }
@@ -261,33 +303,32 @@ class Player {
 const rooms = new Map();
 const players = new Map();
 
-const STATIC_DIR = __dirname;
-const MIME_TYPES = {
-    '.html': 'text/html; charset=utf-8',
-    '.js': 'text/javascript; charset=utf-8',
-    '.css': 'text/css; charset=utf-8',
+// 只开放前端这几个文件，避免把 server.js、package.json 之类也发出去
+const STATIC_FILES = {
+    '/': { file: 'index.html', type: 'text/html; charset=utf-8' },
+    '/index.html': { file: 'index.html', type: 'text/html; charset=utf-8' },
+    '/style.css': { file: 'style.css', type: 'text/css; charset=utf-8' },
+    '/game.js': { file: 'game.js', type: 'text/javascript; charset=utf-8' },
+    '/cardLogic.js': { file: 'cardLogic.js', type: 'text/javascript; charset=utf-8' },
 };
 
 function serveStatic(req, res) {
     const url = new URL(req.url, `http://${req.headers.host}`);
-    const requestedPath = url.pathname === '/' ? '/index.html' : url.pathname;
-    const safePath = path.normalize(requestedPath).replace(/^(\.\.[/\\])+/, '');
-    const filePath = path.join(STATIC_DIR, safePath);
+    const entry = STATIC_FILES[url.pathname];
 
-    if (!filePath.startsWith(STATIC_DIR)) {
-        res.writeHead(403);
-        res.end('Forbidden');
+    if (!entry) {
+        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('Not found');
         return;
     }
 
-    fs.readFile(filePath, (err, data) => {
+    fs.readFile(path.join(__dirname, entry.file), (err, data) => {
         if (err) {
             res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
             res.end('Not found');
             return;
         }
-        const ext = path.extname(filePath);
-        res.writeHead(200, { 'Content-Type': MIME_TYPES[ext] || 'application/octet-stream' });
+        res.writeHead(200, { 'Content-Type': entry.type });
         res.end(data);
     });
 }
@@ -297,291 +338,293 @@ const wss = new WebSocket.Server({ server });
 
 wss.on('connection', (ws, req) => {
     const url = new URL(req.url, `http://${req.headers.host}`);
-    const playerName = url.searchParams.get('name') || 'Anonymous';
+    const rawName = (url.searchParams.get('name') || '').trim();
+    const playerName = rawName.slice(0, 12) || '玩家';
 
     const player = new Player(ws, playerName);
     players.set(ws, player);
-    console.log('新玩家连接:', playerName, '当前玩家数:', players.size);
+    console.log('新玩家连接:', playerName, '在线人数:', players.size);
 
     player.send({ type: 'login_success', playerName: player.name });
 
     ws.on('message', (message) => {
+        let data;
         try {
-            const data = JSON.parse(message);
+            data = JSON.parse(message);
+        } catch (err) {
+            player.send({ type: 'error', message: '消息格式错误' });
+            return;
+        }
+        try {
             handleMessage(player, data);
-        } catch (error) {
-            console.error('Error handling message:', error);
-            player.send({ type: 'error', message: '处理消息时出错' });
+        } catch (err) {
+            console.error('处理消息出错:', err);
+            player.send({ type: 'error', message: '服务器处理出错' });
         }
     });
 
-    ws.on('close', () => {
-        handlePlayerDisconnect(player);
-    });
-
-    ws.on('error', (error) => {
-        console.error('WebSocket error:', error);
-    });
+    ws.on('close', () => handlePlayerDisconnect(player));
+    ws.on('error', (err) => console.error('WebSocket error:', err));
 });
 
 function handleMessage(player, data) {
-    console.log('收到消息:', data.type, data);
     switch (data.type) {
-        case 'create_room':
-            handleCreateRoom(player);
-            break;
-        case 'join_room':
-            handleJoinRoom(player, data.roomId);
-            break;
-        case 'leave_room':
-            handleLeaveRoom(player);
-            break;
-        case 'get_rooms':
-            handleGetRooms(player);
-            break;
-        case 'start_game':
-            handleStartGame(player);
-            break;
-        case 'play_cards':
-            handlePlayCards(player, data.cards);
-            break;
-        case 'pass':
-            handlePass(player);
-            break;
+        case 'create_room': return handleCreateRoom(player);
+        case 'join_room': return handleJoinRoom(player, data.roomId);
+        case 'leave_room': return handleLeaveRoom(player);
+        case 'get_rooms': return sendRoomList(player);
+        case 'start_game': return handleStartGame(player);
+        case 'play_cards': return handlePlayCards(player, data.cards);
+        case 'pass': return handlePass(player);
+        case 'next_round': return handleNextRound(player);
         default:
-            console.log('未知消息类型:', data.type);
             player.send({ type: 'error', message: '未知的消息类型' });
     }
 }
 
 function handleCreateRoom(player) {
-    console.log('处理创建房间请求');
     if (player.roomId) {
-        console.log('玩家已在房间中:', player.roomId);
-        player.send({ type: 'error', message: '你已经在房间中' });
+        player.send({ type: 'error', message: '你已经在房间中了' });
         return;
     }
+    let roomId;
+    do {
+        roomId = generateRoomId();
+    } while (rooms.has(roomId));
 
-    const roomId = generateRoomId();
-    console.log('创建新房间:', roomId);
     const room = new GameRoom(roomId);
     room.addPlayer(player);
     rooms.set(roomId, room);
 
-    player.send({ type: 'room_created', roomId });
-    console.log('发送房间创建成功消息:', roomId);
+    player.send({ type: 'joined_room', roomId, playerId: player.playerId });
+    broadcastRoomState(room);
     broadcastRoomList();
 }
 
 function handleJoinRoom(player, roomId) {
-    console.log('处理加入房间请求:', roomId, '当前房间数:', rooms.size);
-    console.log('所有房间:', Array.from(rooms.keys()));
-    
     if (player.roomId) {
-        console.log('玩家已在房间中:', player.roomId);
-        player.send({ type: 'error', message: '你已经在房间中' });
+        player.send({ type: 'error', message: '你已经在房间中了' });
         return;
     }
-
-    const room = rooms.get(roomId);
+    const room = rooms.get(String(roomId || '').toUpperCase());
     if (!room) {
-        console.log('房间不存在:', roomId);
-        player.send({ type: 'error', message: '房间不存在' });
+        player.send({ type: 'error', message: '房间不存在，请检查房间号' });
         return;
     }
-
-    console.log('房间当前玩家数:', room.players.length);
+    if (room.status === 'playing') {
+        player.send({ type: 'error', message: '这局已经开始了，请等下一局' });
+        return;
+    }
     if (!room.addPlayer(player)) {
-        console.log('房间已满');
         player.send({ type: 'error', message: '房间已满' });
         return;
     }
 
-    console.log('玩家加入成功, playerId:', player.playerId);
-    player.send({ type: 'room_joined', roomId, playerId: player.playerId });
-    broadcastToRoom(room, { type: 'player_joined', player: { playerId: player.playerId, name: player.name } });
-
-    if (room.isFull()) {
-        console.log('房间已满，开始游戏');
-        startGame(room);
-    }
-
+    player.send({ type: 'joined_room', roomId: room.roomId, playerId: player.playerId });
+    broadcastToRoom(room, { type: 'notice', message: `${player.name} 加入了房间` });
+    broadcastRoomState(room);
     broadcastRoomList();
 }
 
 function handleLeaveRoom(player) {
-    if (!player.roomId) return;
+    const room = player.roomId ? rooms.get(player.roomId) : null;
+    detachFromRoom(player, room, '离开了房间');
+    player.send({ type: 'left_room' });
+    broadcastRoomList();
+}
 
-    const room = rooms.get(player.roomId);
-    if (room) {
-        const wasPlaying = room.gameState && room.gameState.status === 'playing';
-        room.removePlayer(player);
-        broadcastToRoom(room, { type: 'player_left', playerName: player.name });
-
-        if (wasPlaying && room.players.length < 3) {
-            room.gameState = null;
-            broadcastToRoom(room, { type: 'game_aborted', message: `${player.name} 离开了，游戏已中止` });
-        }
-
-        if (room.players.length === 0) {
-            console.log('房间为空，删除房间:', player.roomId);
-            rooms.delete(player.roomId);
-        }
+function detachFromRoom(player, room, verb) {
+    if (!room) {
+        player.roomId = null;
+        player.playerId = null;
+        player.cards = [];
+        return;
     }
+    const wasPlaying = room.status === 'playing';
+    const leavingName = player.name;
+    room.removePlayer(player);
 
     player.roomId = null;
     player.playerId = null;
     player.cards = [];
+    player.finished = false;
 
-    broadcastRoomList();
-}
+    if (room.players.length === 0) {
+        rooms.delete(room.roomId);
+        return;
+    }
 
-function handleGetRooms(player) {
-    const roomList = [];
-    rooms.forEach((room, roomId) => {
-        roomList.push({
-            roomId,
-            players: room.players.map(p => ({ name: p.name }))
-        });
-    });
-    player.send({ type: 'room_list', rooms: roomList });
+    broadcastToRoom(room, { type: 'notice', message: `${leavingName} ${verb}` });
+    if (wasPlaying) {
+        room.resetForNextRound();
+        broadcastToRoom(room, { type: 'game_aborted', message: `${leavingName}${verb}，本局中止` });
+    }
+    broadcastRoomState(room);
 }
 
 function handleStartGame(player) {
-    if (!player.roomId) {
+    const room = player.roomId ? rooms.get(player.roomId) : null;
+    if (!room) {
         player.send({ type: 'error', message: '你不在房间中' });
         return;
     }
-
-    const room = rooms.get(player.roomId);
-    if (!room || !room.isFull()) {
-        player.send({ type: 'error', message: '房间未满，无法开始游戏' });
+    if (player.playerId !== room.hostId) {
+        player.send({ type: 'error', message: '只有房主可以开始游戏' });
         return;
     }
+    if (!room.isFull()) {
+        player.send({ type: 'error', message: '需要3个人才能开始' });
+        return;
+    }
+    if (room.status === 'playing') {
+        player.send({ type: 'error', message: '游戏已经在进行中' });
+        return;
+    }
+    startGame(room);
+}
 
+function handleNextRound(player) {
+    const room = player.roomId ? rooms.get(player.roomId) : null;
+    if (!room) return;
+    if (player.playerId !== room.hostId) {
+        player.send({ type: 'error', message: '只有房主可以开始下一局' });
+        return;
+    }
+    if (!room.isFull()) {
+        player.send({ type: 'error', message: '需要3个人才能开始' });
+        return;
+    }
+    room.resetForNextRound();
     startGame(room);
 }
 
 function startGame(room) {
-    const gameState = room.startGame();
-    broadcastToRoom(room, { type: 'game_started', gameState });
-
-    room.players.forEach(player => {
-        player.send({ type: 'cards_dealt', cards: player.cards });
-    });
-
-    broadcastToRoom(room, { type: 'turn_changed', currentPlayer: room.players[room.currentPlayer].playerId });
+    room.startGame();
+    broadcastToRoom(room, { type: 'game_started', level: room.level });
+    room.players.forEach(p => p.send({ type: 'your_cards', cards: p.cards }));
+    broadcastRoomState(room);
 }
 
 function handlePlayCards(player, cards) {
-    if (!player.roomId) {
-        player.send({ type: 'error', message: '你不在房间中' });
-        return;
-    }
-
-    const room = rooms.get(player.roomId);
+    const room = player.roomId ? rooms.get(player.roomId) : null;
     if (!room) {
-        player.send({ type: 'error', message: '房间不存在' });
+        player.send({ type: 'error', message: '你不在房间中' });
         return;
     }
 
     const result = room.playCards(player.playerId, cards);
-    
-    if (result.success) {
-        broadcastToRoom(room, { 
-            type: 'player_played', 
-            playerId: player.playerId, 
-            cards 
-        });
-
-        if (result.gameEnded) {
-            broadcastToRoom(room, { type: 'game_ended', winner: result.winner });
-        } else {
-            broadcastToRoom(room, { 
-                type: 'turn_changed', 
-                currentPlayer: room.players[room.currentPlayer].playerId 
-            });
-        }
-    } else {
-        player.send({ type: 'error', message: result.message });
+    if (result.error) {
+        player.send({ type: 'error', message: result.error });
+        return;
     }
+
+    broadcastToRoom(room, {
+        type: 'played',
+        playerId: player.playerId,
+        playerName: player.name,
+        cards: result.cards,
+        shapeName: SHAPE_NAMES[result.combo.shapeType] || result.combo.shapeType,
+    });
+
+    if (result.justFinished) {
+        const place = room.finishOrder.indexOf(player.playerId) + 1;
+        const placeName = ['头游', '二游', '末游'][place - 1] || `第${place}名`;
+        broadcastToRoom(room, { type: 'notice', message: `${player.name} 出完了牌，${placeName}！` });
+    }
+
+    player.send({ type: 'your_cards', cards: player.cards });
+
+    if (result.gameOver) {
+        broadcastRoomState(room);
+        broadcastToRoom(room, { type: 'game_over', result: buildResultPayload(room) });
+        broadcastRoomList();
+        return;
+    }
+
+    broadcastRoomState(room);
 }
 
 function handlePass(player) {
-    if (!player.roomId) {
+    const room = player.roomId ? rooms.get(player.roomId) : null;
+    if (!room) {
         player.send({ type: 'error', message: '你不在房间中' });
         return;
     }
-
-    const room = rooms.get(player.roomId);
-    if (!room) {
-        player.send({ type: 'error', message: '房间不存在' });
+    const result = room.pass(player.playerId);
+    if (result.error) {
+        player.send({ type: 'error', message: result.error });
         return;
     }
-
-    const result = room.pass(player.playerId);
-    
-    if (result.success) {
-        broadcastToRoom(room, { type: 'player_passed', playerName: player.name });
-        broadcastToRoom(room, { 
-            type: 'turn_changed', 
-            currentPlayer: room.players[room.currentPlayer].playerId 
-        });
-    } else {
-        player.send({ type: 'error', message: result.message });
+    broadcastToRoom(room, { type: 'passed', playerId: player.playerId, playerName: player.name });
+    if (result.newRound) {
+        broadcastToRoom(room, { type: 'notice', message: '新的一轮，随意出牌' });
     }
+    broadcastRoomState(room);
+}
+
+function buildResultPayload(room) {
+    const r = room.lastResult || {};
+    const names = (r.finishOrder || []).map(pid => {
+        const p = room.getPlayer(pid);
+        return p ? p.name : '（已离开）';
+    });
+    return {
+        order: names,
+        winnerName: r.winnerName,
+        fromLevel: r.fromLevel,
+        toLevel: r.toLevel,
+        matchOver: !!r.matchOver,
+    };
 }
 
 function handlePlayerDisconnect(player) {
-    console.log('玩家断开连接:', player.name);
+    console.log('玩家断开:', player.name);
     players.delete(player.ws);
-
-    if (player.roomId) {
-        const room = rooms.get(player.roomId);
-        if (room) {
-            const wasPlaying = room.gameState && room.gameState.status === 'playing';
-            room.removePlayer(player);
-            broadcastToRoom(room, { type: 'player_left', playerName: player.name });
-
-            if (wasPlaying && room.players.length < 3) {
-                room.gameState = null;
-                broadcastToRoom(room, { type: 'game_aborted', message: `${player.name} 离开了，游戏已中止` });
-            }
-
-            if (room.players.length === 0) {
-                console.log('房间为空，删除房间:', player.roomId);
-                rooms.delete(player.roomId);
-            }
-        }
-        broadcastRoomList();
-    }
+    const room = player.roomId ? rooms.get(player.roomId) : null;
+    detachFromRoom(player, room, '断开了连接');
+    broadcastRoomList();
 }
 
 function broadcastToRoom(room, data) {
-    console.log('广播到房间:', room.roomId, '数据:', data);
-    room.players.forEach(player => {
-        console.log('发送给玩家:', player.name, 'playerId:', player.playerId);
-        player.send(data);
+    room.players.forEach(p => p.send(data));
+}
+
+function broadcastRoomState(room) {
+    const state = room.publicState();
+    room.players.forEach(p => p.send({ type: 'room_state', state, you: p.playerId }));
+}
+
+function roomListPayload() {
+    const list = [];
+    rooms.forEach((room, roomId) => {
+        list.push({
+            roomId,
+            playerCount: room.players.length,
+            status: room.status,
+            names: room.players.map(p => p.name),
+        });
     });
+    return list;
+}
+
+function sendRoomList(player) {
+    player.send({ type: 'room_list', rooms: roomListPayload() });
 }
 
 function broadcastRoomList() {
-    const roomList = [];
-    rooms.forEach((room, roomId) => {
-        roomList.push({
-            roomId,
-            players: room.players.map(p => ({ name: p.name }))
-        });
-    });
-
-    console.log('广播房间列表:', roomList);
-    players.forEach(player => {
-        player.send({ type: 'room_list', rooms: roomList });
+    const list = roomListPayload();
+    players.forEach(p => {
+        if (!p.roomId) p.send({ type: 'room_list', rooms: list });
     });
 }
 
 function generateRoomId() {
-    return Math.random().toString(36).substring(2, 8).toUpperCase();
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    let id = '';
+    for (let i = 0; i < 4; i++) {
+        id += chars[Math.floor(Math.random() * chars.length)];
+    }
+    return id;
 }
 
 function getLocalIPs() {
@@ -589,26 +632,30 @@ function getLocalIPs() {
     const ips = [];
     for (const name of Object.keys(interfaces)) {
         for (const iface of interfaces[name] || []) {
-            if (iface.family === 'IPv4' && !iface.internal) {
-                ips.push(iface.address);
-            }
+            if (iface.family === 'IPv4' && !iface.internal) ips.push(iface.address);
         }
     }
     return ips;
 }
 
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-    console.log(`游戏服务器运行在端口 ${PORT}`);
-    console.log('');
-    console.log('======================================');
-    console.log('  家人在同一WiFi下，用手机/电脑浏览器打开:');
-    const ips = getLocalIPs();
-    if (ips.length === 0) {
-        console.log(`  http://localhost:${PORT}`);
-    } else {
-        ips.forEach(ip => console.log(`  http://${ip}:${PORT}`));
-    }
-    console.log('======================================');
-    console.log('');
-});
+// 只有直接运行 `node server.js` 时才监听端口；被测试文件 require 时不启动，
+// 否则测试进程会因为端口一直开着而退不出来。
+if (require.main === module) {
+    const PORT = process.env.PORT || 3000;
+    server.listen(PORT, () => {
+        console.log('');
+        console.log('========================================');
+        console.log('  三人掼蛋已启动！');
+        console.log('  家人连同一个WiFi，用浏览器打开：');
+        const ips = getLocalIPs();
+        if (ips.length === 0) {
+            console.log(`    http://localhost:${PORT}`);
+        } else {
+            ips.forEach(ip => console.log(`    http://${ip}:${PORT}`));
+        }
+        console.log('========================================');
+        console.log('');
+    });
+}
+
+module.exports = { GameRoom, sortHand };
