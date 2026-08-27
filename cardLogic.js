@@ -72,80 +72,111 @@ function analyzeCards(cards, level) {
     return { wildCount, rankCount };
 }
 
+// 以下检测函数都返回"所有可能的解读"数组，而不是碰到第一个就返回。
+// 因为万能牌可以当任意牌，同一手牌往往有多种读法（比如 4-5-6-7-万 既能当
+// 3~7 也能当 4~8），只取第一个会把牌读小，导致明明压得过却被判压不过。
+
+function isJokerRank(rank) {
+    return rank === '小王' || rank === '大王';
+}
+
 // N 张同点数（可用万能牌补齐），用于对子/三张/炸弹
 function detectNOfKind(cards, level, n) {
-    if (cards.length !== n) return null;
+    if (cards.length !== n) return [];
     const { wildCount, rankCount } = analyzeCards(cards, level);
     const distinctRanks = [...rankCount.keys()];
-    if (distinctRanks.length > 1) return null;
-    const rank = distinctRanks.length === 1 ? distinctRanks[0] : level;
-    if ((rank === '小王' || rank === '大王') && wildCount > 0) return null;
-    const have = rankCount.get(rank) || 0;
-    if (have + wildCount !== n) return null;
-    return { rank };
+    if (distinctRanks.length > 1) return [];
+
+    if (distinctRanks.length === 0) {
+        // 全是万能牌：可以当任意点数，取最大的级牌
+        return wildCount === n ? [{ rank: levelAwareRank(level, level) }] : [];
+    }
+    const rank = distinctRanks[0];
+    // 万能牌不能当王
+    if (isJokerRank(rank) && wildCount > 0) return [];
+    if ((rankCount.get(rank) || 0) + wildCount !== n) return [];
+    return [{ rank: levelAwareRank(rank, level) }];
+}
+
+// 判断剩下的牌能不能凑成"带"的那一对
+function attachmentIsPair(naturalRanks, wildsLeft) {
+    if (naturalRanks.length + wildsLeft !== 2) return false;
+    if (naturalRanks.length === 2) return naturalRanks[0] === naturalRanks[1];
+    // 一张真牌 + 一张万能牌：万能牌不能当王
+    if (naturalRanks.length === 1) return !isJokerRank(naturalRanks[0]);
+    return true; // 两张万能牌，当任意一对
 }
 
 // 三带一 / 三带二
 function detectTripleAttached(cards, level, attachLen) {
-    if (cards.length !== 3 + attachLen) return null;
+    if (cards.length !== 3 + attachLen) return [];
     const { wildCount, rankCount } = analyzeCards(cards, level);
-    for (const R of rankCount.keys()) {
-        const haveR = rankCount.get(R);
-        if (haveR > 3) continue;
-        const usedWild = 3 - haveR;
+    const results = [];
+    const candidates = new Set(rankCount.keys());
+    if (wildCount >= 3) candidates.add(level); // 三张全用万能牌凑
+
+    for (const R of candidates) {
+        const haveR = rankCount.get(R) || 0;
+        const usedNatural = Math.min(haveR, 3);
+        const usedWild = 3 - usedNatural;
         if (usedWild < 0 || usedWild > wildCount) continue;
+        // 万能牌不能冒充王，所以王的三张必须是货真价实的三张王（不存在）
+        if (isJokerRank(R) && usedWild > 0) continue;
+
         const remainingWild = wildCount - usedWild;
-        if (R === level && remainingWild > 0) continue;
-
-        const attachPoolRanks = [];
+        const leftover = [];
         for (const [rk, cnt] of rankCount.entries()) {
-            if (rk === R) continue;
-            for (let i = 0; i < cnt; i++) attachPoolRanks.push(rk);
+            const used = rk === R ? usedNatural : 0;
+            for (let i = 0; i < cnt - used; i++) leftover.push(rk);
         }
-        for (let i = 0; i < remainingWild; i++) attachPoolRanks.push(level);
 
-        if (attachPoolRanks.length !== attachLen) continue;
-        if (attachLen === 2 && attachPoolRanks[0] !== attachPoolRanks[1]) continue;
-        return { rank: R };
+        if (attachLen === 1) {
+            if (leftover.length + remainingWild !== 1) continue;
+        } else if (!attachmentIsPair(leftover, remainingWild)) {
+            continue;
+        }
+        results.push({ rank: levelAwareRank(R, level) });
     }
-    return null;
+    return results;
 }
 
 // 顺子：5张及以上连续单张（3~A之间，不含2和王），可用万能牌补空缺
 function detectStraight(cards, level, minLen = 5) {
     const len = cards.length;
-    if (len < minLen) return null;
+    if (len < minLen) return [];
     const { wildCount, rankCount } = analyzeCards(cards, level);
     for (const [rk, cnt] of rankCount) {
-        if (cnt > 1) return null;
-        if (rk === '小王' || rk === '大王') return null;
+        if (cnt > 1) return [];
+        if (isJokerRank(rk)) return [];
     }
     const distinctRanks = [...rankCount.keys()];
-    if (distinctRanks.length + wildCount !== len) return null;
+    if (distinctRanks.length + wildCount !== len) return [];
 
+    const results = [];
     for (let start = 0; start + len <= RANK_ORDER.length; start++) {
         const window = RANK_ORDER.slice(start, start + len);
         const windowSet = new Set(window);
         if (!distinctRanks.every(r => windowSet.has(r))) continue;
-        return { rank: PLAIN_RANK_VALUE[window[0]] };
+        results.push({ rank: PLAIN_RANK_VALUE[window[0]] });
     }
-    return null;
+    return results;
 }
 
 // 连对（木板）：3对及以上连续对子，可用万能牌补空缺
 function detectPairStraight(cards, level, minPairs = 3) {
     const len = cards.length;
-    if (len % 2 !== 0) return null;
+    if (len % 2 !== 0) return [];
     const numPairs = len / 2;
-    if (numPairs < minPairs) return null;
+    if (numPairs < minPairs) return [];
 
     const { wildCount, rankCount } = analyzeCards(cards, level);
     for (const [rk, cnt] of rankCount) {
-        if (cnt > 2) return null;
-        if (rk === '小王' || rk === '大王') return null;
+        if (cnt > 2) return [];
+        if (isJokerRank(rk)) return [];
     }
     const distinctRanks = [...rankCount.keys()];
 
+    const results = [];
     for (let start = 0; start + numPairs <= RANK_ORDER.length; start++) {
         const window = RANK_ORDER.slice(start, start + numPairs);
         const windowSet = new Set(window);
@@ -153,18 +184,18 @@ function detectPairStraight(cards, level, minPairs = 3) {
         let neededWild = 0;
         for (const rk of window) neededWild += 2 - (rankCount.get(rk) || 0);
         if (neededWild !== wildCount) continue;
-        return { rank: PLAIN_RANK_VALUE[window[0]] };
+        results.push({ rank: PLAIN_RANK_VALUE[window[0]] });
     }
-    return null;
+    return results;
 }
 
 function detectStraightFlush(cards, level) {
-    if (cards.length !== 5) return null;
-    const straight = detectStraight(cards, level, 5);
-    if (!straight) return null;
+    if (cards.length !== 5) return [];
+    const straights = detectStraight(cards, level, 5);
+    if (!straights.length) return [];
     const normalSuits = new Set(cards.filter(c => !isWildCard(c, level)).map(c => c.suit));
-    if (normalSuits.size !== 1) return null;
-    return straight;
+    if (normalSuits.size !== 1) return [];
+    return straights;
 }
 
 function detectJokerBomb(cards) {
@@ -177,62 +208,60 @@ function detectJokerBomb(cards) {
 
 const BOMB_TIER_BY_LEN = { 4: TIER.bomb4, 5: TIER.bomb5, 6: TIER.bomb6, 7: TIER.bomb7, 8: TIER.bomb8 };
 
-// 返回 { shapeType, length, rank, tier } 或 null（非法牌型）
-function detectCombo(cards, level) {
-    if (!cards || cards.length === 0) return null;
+// 列出这手牌所有合法的解读
+function detectCombos(cards, level) {
+    const out = [];
+    if (!cards || cards.length === 0) return out;
     const len = cards.length;
+    const add = (shapeType, tier, list) => {
+        for (const r of list) out.push({ shapeType, length: len, rank: r.rank, tier });
+    };
 
     if (len === 1) {
-        return { shapeType: 'single', length: 1, rank: singleCardRank(cards[0], level), tier: 0 };
+        out.push({ shapeType: 'single', length: 1, rank: singleCardRank(cards[0], level), tier: 0 });
+        return out;
     }
 
     const jokerBomb = detectJokerBomb(cards);
-    if (jokerBomb) return { shapeType: 'joker_bomb', length: 4, rank: jokerBomb.rank, tier: TIER.jokerBomb };
+    if (jokerBomb) out.push({ shapeType: 'joker_bomb', length: 4, rank: jokerBomb.rank, tier: TIER.jokerBomb });
 
-    if (len === 2) {
-        const pair = detectNOfKind(cards, level, 2);
-        if (pair) return { shapeType: 'pair', length: 2, rank: levelAwareRank(pair.rank, level), tier: 0 };
-        return null;
-    }
-
-    if (len === 3) {
-        const triple = detectNOfKind(cards, level, 3);
-        if (triple) return { shapeType: 'triple', length: 3, rank: levelAwareRank(triple.rank, level), tier: 0 };
-        return null;
-    }
-
-    if (len >= 4 && len <= 8) {
-        const bomb = detectNOfKind(cards, level, len);
-        if (bomb && bomb.rank !== '小王' && bomb.rank !== '大王') {
-            return { shapeType: 'bomb', length: len, rank: levelAwareRank(bomb.rank, level), tier: BOMB_TIER_BY_LEN[len] };
-        }
-    }
-
-    if (len === 4) {
-        const tripleSingle = detectTripleAttached(cards, level, 1);
-        if (tripleSingle) return { shapeType: 'triple_single', length: 4, rank: levelAwareRank(tripleSingle.rank, level), tier: 0 };
-        return null;
-    }
-
+    if (len === 2) add('pair', 0, detectNOfKind(cards, level, 2));
+    if (len === 3) add('triple', 0, detectNOfKind(cards, level, 3));
+    if (len >= 4 && len <= 8) add('bomb', BOMB_TIER_BY_LEN[len], detectNOfKind(cards, level, len));
+    if (len === 4) add('triple_single', 0, detectTripleAttached(cards, level, 1));
     if (len === 5) {
-        const triplePair = detectTripleAttached(cards, level, 2);
-        if (triplePair) return { shapeType: 'triple_pair', length: 5, rank: levelAwareRank(triplePair.rank, level), tier: 0 };
-        const straightFlush = detectStraightFlush(cards, level);
-        if (straightFlush) return { shapeType: 'straight_flush', length: 5, rank: straightFlush.rank, tier: TIER.straightFlush };
-        const straight = detectStraight(cards, level, 5);
-        if (straight) return { shapeType: 'straight', length: 5, rank: straight.rank, tier: 0 };
-        return null;
+        add('triple_pair', 0, detectTripleAttached(cards, level, 2));
+        add('straight_flush', TIER.straightFlush, detectStraightFlush(cards, level));
     }
+    if (len >= 5) add('straight', 0, detectStraight(cards, level, 5));
+    if (len >= 6 && len % 2 === 0) add('pair_straight', 0, detectPairStraight(cards, level, 3));
 
-    // len >= 6
-    if (len % 2 === 0) {
-        const pairStraight = detectPairStraight(cards, level, 3);
-        if (pairStraight) return { shapeType: 'pair_straight', length: len, rank: pairStraight.rank, tier: 0 };
+    return out;
+}
+
+function betterCombo(a, b) {
+    if (!a) return b;
+    if (!b) return a;
+    if (a.tier !== b.tier) return a.tier > b.tier ? a : b;
+    return a.rank >= b.rank ? a : b;
+}
+
+// 返回最有利的那种解读（牌型等级最高、点数最大），无解则 null
+function detectCombo(cards, level) {
+    const all = detectCombos(cards, level);
+    let best = null;
+    for (const c of all) best = betterCombo(best, c);
+    return best;
+}
+
+// 在所有解读里找一种能压过 lastCombo 的（同样取最有利的），没有则 null
+function findBeatingCombo(cards, level, lastCombo) {
+    const all = detectCombos(cards, level);
+    let best = null;
+    for (const c of all) {
+        if (canBeat(c, lastCombo)) best = betterCombo(best, c);
     }
-    const straight = detectStraight(cards, level, 5);
-    if (straight) return { shapeType: 'straight', length: len, rank: straight.rank, tier: 0 };
-
-    return null;
+    return best;
 }
 
 function canBeat(newCombo, lastCombo) {
@@ -248,6 +277,146 @@ function canBeat(newCombo, lastCombo) {
         newCombo.rank > lastCombo.rank;
 }
 
+// 提示功能：按上家牌型有针对性地找一手能压过的牌。
+// 不能盲目枚举组合——36张牌的全子集会卡死浏览器，所以按牌型定向搜索。
+function suggestPlay(cards, level, last) {
+    const tryCombo = (subset) => {
+        if (!subset || subset.some(x => !x)) return null;
+        return findBeatingCombo(subset, level, last) ? subset : null;
+    };
+
+    // 按点数分组（万能牌单独放，作百搭用）
+    const groups = new Map();
+    const wilds = [];
+    for (const card of cards) {
+        if (isWildCard(card, level)) { wilds.push(card); continue; }
+        if (!groups.has(card.rank)) groups.set(card.rank, []);
+        groups.get(card.rank).push(card);
+    }
+    const RANKS = RANK_ORDER;
+
+    if (!last) {
+        let min = cards[0];
+        for (const card of cards) {
+            if (singleCardRank(card, level) < singleCardRank(min, level)) min = card;
+        }
+        return [min];
+    }
+
+    const len = last.length;
+    const shape = last.shapeType;
+
+    // 同型同长：先按牌型分别找
+    if (shape === 'single') {
+        const sorted = [...cards].sort((a, b) => singleCardRank(a, level) - singleCardRank(b, level));
+        for (const card of sorted) {
+            const r = tryCombo([card]);
+            if (r) return r;
+        }
+    } else if (shape === 'pair' || shape === 'triple') {
+        const need = shape === 'pair' ? 2 : 3;
+        for (const g of groups.values()) {
+            for (let useWild = 0; useWild <= Math.min(wilds.length, need); useWild++) {
+                if (g.length + useWild < need) continue;
+                const r = tryCombo([...g.slice(0, need - useWild), ...wilds.slice(0, useWild)]);
+                if (r) return r;
+            }
+        }
+        // 纯万能牌凑的对子/三张（比如打7时两张♥7当一对级牌，最大的对子）
+        if (wilds.length >= need) {
+            const r = tryCombo(wilds.slice(0, need));
+            if (r) return r;
+        }
+    } else if (shape === 'triple_single' || shape === 'triple_pair') {
+        const attach = shape === 'triple_single' ? 1 : 2;
+        for (const [rank, g] of groups) {
+            for (let useWild = 0; useWild <= Math.min(wilds.length, 2); useWild++) {
+                if (g.length + useWild < 3) continue;
+                const triple = [...g.slice(0, 3 - useWild), ...wilds.slice(0, useWild)];
+                const restWilds = wilds.slice(useWild);
+                for (const [rank2, g2] of groups) {
+                    if (rank2 === rank) continue;
+                    if (g2.length >= attach) {
+                        const r = tryCombo([...triple, ...g2.slice(0, attach)]);
+                        if (r) return r;
+                    }
+                    if (attach === 2 && g2.length === 1 && restWilds.length >= 1) {
+                        const r = tryCombo([...triple, g2[0], restWilds[0]]);
+                        if (r) return r;
+                    }
+                }
+            }
+        }
+    } else if (shape === 'straight' || shape === 'pair_straight') {
+        const per = shape === 'straight' ? 1 : 2;
+        const count = len / per;
+        for (let start = 0; start + count <= RANKS.length; start++) {
+            const window = RANKS.slice(start, start + count);
+            const picked = [];
+            let wildNeed = 0;
+            for (const rank of window) {
+                const have = groups.get(rank) || [];
+                if (have.length >= per) {
+                    picked.push(...have.slice(0, per));
+                } else {
+                    picked.push(...have);
+                    wildNeed += per - have.length;
+                }
+            }
+            if (wildNeed > wilds.length) continue;
+            const r = tryCombo([...picked, ...wilds.slice(0, wildNeed)]);
+            if (r) return r;
+        }
+    }
+
+    // 同花顺（5张同花色顺子）也算炸弹体系，之前完全漏掉了
+    const bySuit = new Map();
+    for (const card of cards) {
+        if (isWildCard(card, level)) continue;
+        if (card.rank === '小王' || card.rank === '大王') continue;
+        if (!bySuit.has(card.suit)) bySuit.set(card.suit, new Map());
+        const m = bySuit.get(card.suit);
+        if (!m.has(card.rank)) m.set(card.rank, card);
+    }
+    for (const [, byRankOfSuit] of bySuit) {
+        for (let start = 0; start + 5 <= RANKS.length; start++) {
+            const window = RANKS.slice(start, start + 5);
+            const picked = [];
+            let need = 0;
+            for (const rank of window) {
+                const card = byRankOfSuit.get(rank);
+                if (card) picked.push(card); else need++;
+            }
+            if (need > wilds.length) continue;
+            const r = tryCombo([...picked, ...wilds.slice(0, need)]);
+            if (r) return r;
+        }
+    }
+
+    // 都不行就找炸弹（从小到大，别浪费大炸）
+    const bombCandidates = [];
+    for (const g of groups.values()) {
+        for (let useWild = 0; useWild <= wilds.length; useWild++) {
+            const size = Math.min(g.length, 8 - useWild) + useWild;
+            if (size < 4) continue;
+            bombCandidates.push([...g.slice(0, size - useWild), ...wilds.slice(0, useWild)]);
+        }
+    }
+    bombCandidates.sort((a, b) => a.length - b.length);
+    for (const cand of bombCandidates) {
+        const r = tryCombo(cand);
+        if (r) return r;
+    }
+
+    // 四王炸
+    const jokers = cards.filter(card => card.rank === '小王' || card.rank === '大王');
+    if (jokers.length === 4) {
+        const r = tryCombo(jokers);
+        if (r) return r;
+    }
+    return null;
+}
+
 const SHAPE_NAMES = {
     single: '单张', pair: '对子', triple: '三张', triple_single: '三带一', triple_pair: '三带二',
     straight: '顺子', pair_straight: '连对', bomb: '炸弹', straight_flush: '同花顺', joker_bomb: '四王炸',
@@ -256,7 +425,7 @@ const SHAPE_NAMES = {
 const CardLogic = {
     SUITS, RANK_ORDER, LEVEL_ORDER, PLAIN_RANK_VALUE, TIER, SHAPE_NAMES,
     createDoubleDeck, shuffle, isWildCard, singleCardRank, levelAwareRank,
-    detectCombo, canBeat,
+    detectCombo, detectCombos, findBeatingCombo, suggestPlay, canBeat,
 };
 
 // 同时支持 Node (服务器) 和浏览器 (前端) 引入

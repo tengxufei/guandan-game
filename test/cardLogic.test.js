@@ -1,5 +1,6 @@
 const assert = require('assert');
-const { detectCombo, canBeat, createDoubleDeck, SHAPE_NAMES } = require('../cardLogic');
+const { detectCombo, detectCombos, findBeatingCombo, suggestPlay,
+    canBeat, createDoubleDeck, SHAPE_NAMES } = require('../cardLogic');
 
 let passed = 0;
 let failed = 0;
@@ -180,6 +181,124 @@ group('牌堆', () => {
         const deck = createDoubleDeck();
         assert.strictEqual(deck.filter(card => card.rank === '大王').length, 2);
         assert.strictEqual(deck.filter(card => card.rank === '小王').length, 2);
+    });
+});
+
+
+// ===== 以下为查出 bug 后补的回归测试 =====
+
+group('万能牌不能冒充大小王', () => {
+    test('大王大王+万能牌+散牌 不能算三带一（凑不出三张王）', () =>
+        assert.strictEqual(shape(hand('🃏大王', '🃏大王', '♥6', '♠2'), '6'), null));
+    test('单张王+两张万能牌+一对 不能算三带二', () =>
+        assert.strictEqual(shape(hand('🃏大王', '♥4', '♥4', '♠A', '♥A'), '4'), null));
+    test('三张王(带牌形式)与单独三张王判定一致，都无效', () => {
+        assert.strictEqual(shape(hand('🃏大王', '🃏大王', '♥6'), '6'), null);
+        assert.strictEqual(shape(hand('🃏大王', '🃏大王', '♥6', '♠2'), '6'), null);
+    });
+    test('小王小王当"带的一对"是合法的（真牌，没用万能牌冒充）', () => {
+        const combo = detectCombo(hand('🃏小王', '🃏小王', '♥4', '♣4', '♥7'), '7');
+        assert.ok(combo, '应该是有效牌型');
+        assert.strictEqual(combo.shapeType, 'triple_pair');
+        assert.strictEqual(combo.rank, 4, '应读作444带一对小王，而不是王的三张');
+    });
+});
+
+group('万能牌在"带"的位置可以当任意牌', () => {
+    test('打7: 999 + Q和万能牌 = 三带二', () => {
+        const combo = detectCombo(hand('♠9', '♦9', '♣9', '♠Q', '♥7'), '7');
+        assert.ok(combo, '不应被判为无效');
+        assert.strictEqual(combo.shapeType, 'triple_pair');
+        assert.strictEqual(combo.rank, 9);
+    });
+    test('打9: 222 + K和万能牌 = 三带二', () => {
+        const combo = detectCombo(hand('♠2', '♥2', '♣2', '♥K', '♥9'), '9');
+        assert.ok(combo);
+        assert.strictEqual(combo.shapeType, 'triple_pair');
+    });
+    test('带的一对不能是"王+万能牌"', () =>
+        assert.strictEqual(shape(hand('♠9', '♦9', '♣9', '🃏大王', '♥7'), '7'), null));
+});
+
+group('有歧义时取最有利的解读', () => {
+    const beats = (mine, theirs, level) =>
+        !!findBeatingCombo(mine, level, detectCombo(theirs, level));
+
+    test('顺子: 4567+万能 读作4-8而不是3-7', () =>
+        assert.strictEqual(detectCombo(hand('♠4', '♦5', '♣6', '♠7', '♥K'), 'K').rank, 4));
+    test('顺子: 4567+万能 压得过 34567', () =>
+        assert.ok(beats(hand('♠4', '♦5', '♣6', '♠7', '♥K'), hand('♦3', '♦4', '♦5', '♠6', '♣7'), 'K')));
+    test('连对: 5566+两万能 压得过 445566', () =>
+        assert.ok(beats(hand('♣5', '♥5', '♣6', '♥6', '♥2', '♥2'),
+            hand('♠4', '♦4', '♠5', '♦5', '♠6', '♦6'), '2')));
+    test('三带一: 6+9+两万能 读作999带6', () =>
+        assert.strictEqual(detectCombo(hand('♠6', '♥9', '♥Q', '♥Q'), 'Q').rank, 9));
+    test('三带二: 222(级牌)+99 读作级牌三张(rank16)', () =>
+        assert.strictEqual(detectCombo(hand('♠2', '♣2', '♥2', '♥2', '♥9'), '2').rank, 16));
+    test('同花顺: ♠10JQ+两万能 读作10-A', () => {
+        const combo = detectCombo(hand('♠10', '♠J', '♠Q', '♥9', '♥9'), '9');
+        assert.strictEqual(combo.shapeType, 'straight_flush');
+        assert.strictEqual(combo.rank, 10);
+    });
+    test('同花顺压得过更小的同花顺', () =>
+        assert.ok(beats(hand('♠10', '♠J', '♠Q', '♥9', '♥9'),
+            hand('♦9', '♦10', '♦J', '♦Q', '♦K'), '9')));
+});
+
+group('detectCombos 列出多种解读', () => {
+    test('4567+万能 至少有两种顺子读法', () => {
+        const all = detectCombos(hand('♠4', '♦5', '♣6', '♠7', '♥K'), 'K')
+            .filter(c => c.shapeType === 'straight');
+        assert.ok(all.length >= 2, `只找到 ${all.length} 种读法`);
+    });
+    test('无效牌返回空数组', () =>
+        assert.strictEqual(detectCombos(hand('♠3', '♦7', '♣J'), '2').length, 0));
+});
+
+group('findBeatingCombo', () => {
+    test('压不过时返回 null', () =>
+        assert.strictEqual(findBeatingCombo(hand('♠3'), '2', detectCombo(hand('♠9'), '2')), null));
+    test('没有上家时随便出都行', () =>
+        assert.ok(findBeatingCombo(hand('♠3'), '2', null)));
+    test('炸弹能压普通牌型', () =>
+        assert.ok(findBeatingCombo(hand('♠5', '♥5', '♣5', '♦5'), '2', detectCombo(hand('♠A', '♣A'), '2'))));
+});
+
+
+group('提示功能 (suggestPlay)', () => {
+    const hintFor = (myHand, lastCards, level) =>
+        suggestPlay(myHand, level, detectCombo(lastCards, level));
+
+    test('能找到同花顺来压炸弹（曾经完全漏找）', () => {
+        const got = hintFor(hand('♠3', '♠4', '♠5', '♠6', '♠7', '♦9', '♣J'),
+            hand('♠8', '♥8', '♣8', '♦8'), '2');
+        assert.ok(got, '应该找到同花顺');
+        assert.strictEqual(detectCombo(got, '2').shapeType, 'straight_flush');
+    });
+    test('能找到同花顺来压更小的同花顺', () => {
+        const got = hintFor(hand('♠9', '♠10', '♠J', '♠Q', '♠K', '♦3', '♣4'),
+            hand('♦3', '♦4', '♦5', '♦6', '♦7'), '2');
+        assert.ok(got);
+    });
+    test('两张万能牌可以当一对（曾经上限写成 need-1 导致找不到）', () => {
+        const got = hintFor(hand('♥7', '♥7', '♠3', '♦4', '♣5'), hand('♠A', '♣A'), '7');
+        assert.ok(got, '应该找到两张♥7当级牌对子');
+        assert.strictEqual(got.length, 2);
+    });
+    test('真的没有能压过的牌时返回 null', () =>
+        assert.strictEqual(hintFor(hand('♦3', '♦4', '♣6', '♠8'), hand('♣J'), 'J'), null));
+    test('提示给出的牌一定是手里有的、且真的压得过', () => {
+        const myHand = hand('♠9', '♦9', '♣9', '♠Q', '♥7', '♠3', '♣4');
+        const last = detectCombo(hand('♠5', '♦5', '♣5', '♠8', '♦8'), '7');
+        const got = suggestPlay(myHand, '7', last);
+        assert.ok(got, '应该找到三带二');
+        got.forEach(card => assert.ok(myHand.includes(card), '提示了手里没有的牌'));
+        assert.ok(findBeatingCombo(got, '7', last), '提示的牌压不过上家');
+    });
+    test('没有上家时提示最小的单张', () => {
+        const got = suggestPlay(hand('♠9', '♦3', '♣K'), '2', null);
+        assert.strictEqual(got.length, 1);
+        assert.strictEqual(got[0].rank, '3');
     });
 });
 

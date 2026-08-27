@@ -3,7 +3,8 @@
 (function () {
 'use strict';
 
-const { detectCombo, canBeat, singleCardRank, isWildCard, SHAPE_NAMES } = window.CardLogic;
+const { detectCombo, detectCombos, findBeatingCombo, suggestPlay,
+        canBeat, singleCardRank, isWildCard, SHAPE_NAMES } = window.CardLogic;
 
 let ws = null;
 let myName = '';
@@ -12,6 +13,8 @@ let roomState = null;
 let myCards = [];
 let selected = new Set(); // 选中的手牌下标
 let toastTimer = null;
+let passedThisRound = new Set(); // 本轮已经"不要"的玩家，用于在对手面板上标出来
+let sortMode = 'rank'; // rank = 按大小; group = 把对子/三张聚在一起
 
 const $ = (id) => document.getElementById(id);
 
@@ -34,8 +37,19 @@ document.addEventListener('DOMContentLoaded', () => {
     $('start-game-btn').addEventListener('click', () => send('start_game'));
     $('next-round-btn').addEventListener('click', () => send('next_round'));
     $('play-btn').addEventListener('click', doPlay);
-    $('pass-btn').addEventListener('click', () => { selected.clear(); send('pass'); });
+    $('pass-btn').addEventListener('click', () => {
+        selected.clear();
+        renderMyCards(); // 必须重绘，否则牌上的选中高亮会留着，和实际选中状态相反
+        updateButtons();
+        send('pass');
+    });
     $('hint-btn').addEventListener('click', doHint);
+    $('sort-btn').addEventListener('click', () => {
+        sortMode = sortMode === 'rank' ? 'group' : 'rank';
+        applySort();
+        toast(sortMode === 'group' ? '已把对子/三张排到一起' : '已按大小排序');
+    });
+    window.addEventListener('resize', () => renderMyCards());
     $('result-close').addEventListener('click', () => $('result-modal').classList.add('hidden'));
 });
 
@@ -101,10 +115,11 @@ function handle(msg) {
         case 'your_cards':
             myCards = msg.cards;
             selected.clear();
-            renderMyCards();
+            applySort();
             updateButtons();
             break;
         case 'game_started':
+            passedThisRound.clear();
             $('played-cards').innerHTML = '';
             $('table-label').textContent = '';
             $('table-hint').textContent = '';
@@ -112,10 +127,13 @@ function handle(msg) {
             toast(`游戏开始！本局打 ${msg.level}`);
             break;
         case 'played':
+            passedThisRound.clear(); // 有人出牌就是新一圈，清掉"不要"标记
             renderPlayed(msg);
             break;
         case 'passed':
+            passedThisRound.add(msg.playerId);
             if (msg.playerId !== myId) toast(`${msg.playerName} 不要`);
+            render();
             break;
         case 'notice':
             toast(msg.message);
@@ -198,8 +216,31 @@ function render() {
         el.querySelector('.opp-count').textContent = p.cardCount;
         el.classList.toggle('active', roomState.currentPlayerId === p.playerId);
         el.classList.toggle('done', p.finished);
+
+        // 牌背扇形，直观看出对手手牌多少（最多画14张，再多就看数字）
+        const fan = el.querySelector('.opp-fan');
+        const show = Math.min(p.cardCount, 14);
+        if (fan.childElementCount !== show) {
+            fan.innerHTML = '';
+            for (let k = 0; k < show; k++) {
+                const b = document.createElement('div');
+                b.className = 'card-back';
+                fan.appendChild(b);
+            }
+        }
+
         const place = roomState.finishOrder.indexOf(p.playerId);
-        el.querySelector('.opp-tag').textContent = place >= 0 ? ['头游', '二游', '末游'][place] : '';
+        const tag = el.querySelector('.opp-tag');
+        if (place >= 0) {
+            tag.textContent = ['头游', '二游', '末游'][place];
+            tag.className = 'opp-tag rank';
+        } else if (passedThisRound.has(p.playerId)) {
+            tag.textContent = '不要';
+            tag.className = 'opp-tag pass';
+        } else {
+            tag.textContent = '';
+            tag.className = 'opp-tag';
+        }
     });
 
     updateStatusBar();
@@ -221,6 +262,12 @@ function updateStatusBar() {
         bar.className = 'status-bar';
         return;
     }
+    // 新一轮开始时清空牌桌，免得旧牌一直摆在那儿让人以为还要压
+    if (!roomState.lastCombo && $('played-cards').childElementCount > 0) {
+        $('played-cards').innerHTML = '<span class="table-empty">新一轮，随意出牌</span>';
+        $('table-label').textContent = '';
+    }
+
     const cur = roomState.players.find(p => p.playerId === roomState.currentPlayerId);
     if (roomState.currentPlayerId === myId) {
         bar.textContent = roomState.lastCombo ? '轮到你了 — 出牌或不要' : '轮到你了 — 本轮你先出';
@@ -244,21 +291,26 @@ function updateButtons() {
     show($('play-btn'), playing);
     show($('pass-btn'), playing);
     show($('hint-btn'), playing);
+    show($('sort-btn'), playing);
 
-    const combo = currentSelectionCombo();
-    $('play-btn').disabled = !myTurn || !combo || !canBeat(combo, lastComboForCompare());
+    const cards = selectedCards();
+    const last = lastComboForCompare();
+    const beating = cards.length ? findBeatingCombo(cards, roomState.level, last) : null;
+    const anyShape = cards.length ? detectCombo(cards, roomState.level) : null;
+
+    $('play-btn').disabled = !myTurn || !beating;
     $('pass-btn').disabled = !myTurn || !roomState.lastCombo;
 
     const hint = $('table-hint');
     if (playing && selected.size > 0) {
-        if (!combo) {
+        if (!anyShape) {
             hint.textContent = '选中的牌不是有效牌型';
             hint.className = 'table-hint bad';
-        } else if (!canBeat(combo, lastComboForCompare())) {
-            hint.textContent = `${SHAPE_NAMES[combo.shapeType]} — 压不过上家`;
+        } else if (!beating) {
+            hint.textContent = `${SHAPE_NAMES[anyShape.shapeType]} — 压不过上家`;
             hint.className = 'table-hint bad';
         } else {
-            hint.textContent = `${SHAPE_NAMES[combo.shapeType]} — 可以出`;
+            hint.textContent = `${SHAPE_NAMES[beating.shapeType]} — 可以出`;
             hint.className = 'table-hint good';
         }
     } else if (hint.className.indexOf('table-hint') === 0) {
@@ -276,28 +328,107 @@ function lastComboForCompare() {
     return detectCombo(roomState.lastCombo.cards, roomState.level);
 }
 
-function currentSelectionCombo() {
-    if (selected.size === 0) return null;
+function selectedCards() {
     const cards = [...selected].map(i => myCards[i]).filter(Boolean);
-    if (cards.length !== selected.size) return null;
-    return detectCombo(cards, roomState ? roomState.level : '2');
+    return cards.length === selected.size ? cards : [];
 }
+
+// 手牌叠着显示：同点数的牌贴得更紧，换点数时留缝，
+// 这样一眼就能看出手里有几对、几个三张
+// 两种理牌方式：按大小，或把同点数多张的（对子/三张/炸弹）排到前面
+function applySort() {
+    const level = roomState ? roomState.level : '2';
+    if (sortMode === 'group') {
+        const count = new Map();
+        myCards.forEach(c => count.set(c.rank, (count.get(c.rank) || 0) + 1));
+        myCards.sort((a, b) => {
+            const ca = count.get(a.rank), cb = count.get(b.rank);
+            if (ca !== cb) return cb - ca;
+            return singleCardRank(b, level) - singleCardRank(a, level);
+        });
+    } else {
+        myCards.sort((a, b) => singleCardRank(b, level) - singleCardRank(a, level));
+    }
+    selected.clear();
+    renderMyCards();
+    updateButtons();
+}
+
+// 叠多少是按容器实际宽度算出来的：屏幕宽就少叠，窄就多叠，
+// 保证任何屏幕都不横向溢出，也不浪费空间。
+const MIN_STEP = 23;  // 每张至少露出这么宽，太窄手指点不准
+const GROUP_GAP = 9;  // 换点数时额外留的缝
 
 function renderMyCards() {
     const wrap = $('my-cards');
     wrap.innerHTML = '';
-    myCards.forEach((card, i) => {
-        wrap.appendChild(cardEl(card, i));
-    });
+    if (!myCards.length) return;
+
+    // 先放一张进去量出实际牌宽（不同断点牌大小不一样）
+    const probeRow = document.createElement('div');
+    probeRow.className = 'card-row';
+    const probe = cardEl(myCards[0], 0);
+    probe.style.visibility = 'hidden';
+    probeRow.appendChild(probe);
+    wrap.appendChild(probeRow);
+    const cardW = probe.offsetWidth || 46;
+    const avail = Math.max(wrap.clientWidth - 6, cardW);
+    wrap.innerHTML = '';
+
+    // 在"每张至少露出 MIN_STEP"的前提下，一行最多放几张 —— 行数尽量少
+    const maxPerRow = Math.max(1, Math.floor((avail - cardW) / MIN_STEP) + 1);
+    const rows = Math.max(1, Math.ceil(myCards.length / maxPerRow));
+    const perRow = Math.ceil(myCards.length / rows); // 每行张数尽量平均
+
+    for (let start = 0; start < myCards.length; start += perRow) {
+        const slice = myCards.slice(start, start + perRow);
+        const n = slice.length;
+        const row = document.createElement('div');
+        row.className = 'card-row';
+
+        // 同点数用 step，换点数多给 GROUP_GAP；空间不够就先牺牲分组的缝
+        const groupStart = slice.map((card, j) => j > 0 && card.rank !== slice[j - 1].rank);
+        const gaps = groupStart.filter(Boolean).length;
+        let gap = GROUP_GAP;
+        let step = n > 1 ? (avail - cardW - gaps * gap) / (n - 1) : 0;
+        if (step < MIN_STEP) {
+            gap = 0;
+            step = n > 1 ? (avail - cardW) / (n - 1) : 0;
+        }
+        step = Math.min(step, cardW); // 最多就是不重叠
+
+        slice.forEach((card, j) => {
+            const el = cardEl(card, start + j);
+            el.style.zIndex = String(j + 1);
+            if (j > 0) {
+                const advance = step + (groupStart[j] ? gap : 0);
+                el.style.marginLeft = `${Math.round(advance - cardW)}px`;
+            }
+            row.appendChild(el);
+        });
+        wrap.appendChild(row);
+    }
+}
+
+// 大小王写全名在窄的露出部分里会被截断，这里压缩成"王"+大/小
+function cardFace(card) {
+    if (card.rank === '大王') return { rank: '王', suit: '大', pip: '🃏', joker: 'big' };
+    if (card.rank === '小王') return { rank: '王', suit: '小', pip: '🃏', joker: 'small' };
+    return { rank: card.rank, suit: card.suit, pip: card.suit };
 }
 
 function cardEl(card, index) {
     const el = document.createElement('div');
-    const red = card.suit === '♥' || card.suit === '♦';
+    const red = card.suit === '♥' || card.suit === '♦' || card.rank === '大王';
     el.className = `card ${red ? 'red' : 'black'}`;
-    if (roomState && isWildCard(card, roomState.level)) el.classList.add('wild');
+    if (card.rank === '大王' || card.rank === '小王') el.classList.add('joker');
+    const level = roomState ? roomState.level : null;
+    if (level && isWildCard(card, level)) el.classList.add('wild');
+    else if (level && card.rank === level) el.classList.add('levelcard');
     if (selected.has(index)) el.classList.add('selected');
-    el.innerHTML = `<span class="rank">${card.rank}</span><span class="suit">${card.suit}</span>`;
+    const face = cardFace(card);
+    el.innerHTML = `<span class="corner"><span class="rank">${face.rank}</span>` +
+        `<span class="suit">${face.suit}</span></span><span class="pip">${face.pip}</span>`;
     el.addEventListener('click', () => {
         if (selected.has(index)) selected.delete(index); else selected.add(index);
         el.classList.toggle('selected');
@@ -310,10 +441,14 @@ function renderPlayed(msg) {
     const wrap = $('played-cards');
     wrap.innerHTML = '';
     msg.cards.forEach(card => {
-        const red = card.suit === '♥' || card.suit === '♦';
+        const red = card.suit === '♥' || card.suit === '♦' || card.rank === '大王';
         const el = document.createElement('div');
         el.className = `card small ${red ? 'red' : 'black'}`;
-        el.innerHTML = `<span class="rank">${card.rank}</span><span class="suit">${card.suit}</span>`;
+        const level = roomState ? roomState.level : null;
+        if (level && isWildCard(card, level)) el.classList.add('wild');
+        const f = cardFace(card);
+        el.innerHTML = `<span class="corner"><span class="rank">${f.rank}</span>` +
+            `<span class="suit">${f.suit}</span></span>`;
         wrap.appendChild(el);
     });
     const who = msg.playerId === myId ? '我' : msg.playerName;
@@ -330,7 +465,7 @@ function doPlay() {
 function doHint() {
     const last = lastComboForCompare();
     const level = roomState.level;
-    const found = findPlayable(myCards, level, last);
+    const found = suggestPlay(myCards, level, last);
     if (!found) {
         toast(last ? '没有能压过上家的牌' : '没有可出的牌');
         return;
@@ -338,117 +473,7 @@ function doHint() {
     selected = new Set(found.map(card => myCards.indexOf(card)));
     renderMyCards();
     updateButtons();
-}
-
-// 按上家牌型有针对性地找，而不是盲目枚举组合——36张牌全排列会卡死浏览器
-function findPlayable(cards, level, last) {
-    const tryCombo = (subset) => {
-        if (!subset || subset.some(x => !x)) return null;
-        const combo = detectCombo(subset, level);
-        return combo && canBeat(combo, last) ? subset : null;
-    };
-
-    // 按点数分组（万能牌单独放，作百搭用）
-    const groups = new Map();
-    const wilds = [];
-    for (const card of cards) {
-        if (isWildCard(card, level)) { wilds.push(card); continue; }
-        if (!groups.has(card.rank)) groups.set(card.rank, []);
-        groups.get(card.rank).push(card);
-    }
-    const RANKS = window.CardLogic.RANK_ORDER;
-
-    if (!last) {
-        let min = cards[0];
-        for (const card of cards) {
-            if (singleCardRank(card, level) < singleCardRank(min, level)) min = card;
-        }
-        return [min];
-    }
-
-    const len = last.length;
-    const shape = last.shapeType;
-
-    // 同型同长：先按牌型分别找
-    if (shape === 'single') {
-        const sorted = [...cards].sort((a, b) => singleCardRank(a, level) - singleCardRank(b, level));
-        for (const card of sorted) {
-            const r = tryCombo([card]);
-            if (r) return r;
-        }
-    } else if (shape === 'pair' || shape === 'triple') {
-        const need = shape === 'pair' ? 2 : 3;
-        for (const g of groups.values()) {
-            for (let useWild = 0; useWild <= Math.min(wilds.length, need - 1); useWild++) {
-                if (g.length + useWild < need) continue;
-                const r = tryCombo([...g.slice(0, need - useWild), ...wilds.slice(0, useWild)]);
-                if (r) return r;
-            }
-        }
-    } else if (shape === 'triple_single' || shape === 'triple_pair') {
-        const attach = shape === 'triple_single' ? 1 : 2;
-        for (const [rank, g] of groups) {
-            for (let useWild = 0; useWild <= Math.min(wilds.length, 2); useWild++) {
-                if (g.length + useWild < 3) continue;
-                const triple = [...g.slice(0, 3 - useWild), ...wilds.slice(0, useWild)];
-                const restWilds = wilds.slice(useWild);
-                for (const [rank2, g2] of groups) {
-                    if (rank2 === rank) continue;
-                    if (g2.length >= attach) {
-                        const r = tryCombo([...triple, ...g2.slice(0, attach)]);
-                        if (r) return r;
-                    }
-                    if (attach === 2 && g2.length === 1 && restWilds.length >= 1) {
-                        const r = tryCombo([...triple, g2[0], restWilds[0]]);
-                        if (r) return r;
-                    }
-                }
-            }
-        }
-    } else if (shape === 'straight' || shape === 'pair_straight') {
-        const per = shape === 'straight' ? 1 : 2;
-        const count = len / per;
-        for (let start = 0; start + count <= RANKS.length; start++) {
-            const window = RANKS.slice(start, start + count);
-            const picked = [];
-            let wildNeed = 0;
-            for (const rank of window) {
-                const have = groups.get(rank) || [];
-                if (have.length >= per) {
-                    picked.push(...have.slice(0, per));
-                } else {
-                    picked.push(...have);
-                    wildNeed += per - have.length;
-                }
-            }
-            if (wildNeed > wilds.length) continue;
-            const r = tryCombo([...picked, ...wilds.slice(0, wildNeed)]);
-            if (r) return r;
-        }
-    }
-
-    // 都不行就找炸弹（从小到大，别浪费大炸）
-    const bombCandidates = [];
-    for (const g of groups.values()) {
-        for (let useWild = 0; useWild <= wilds.length; useWild++) {
-            const size = Math.min(g.length, 8 - useWild) + useWild;
-            if (size < 4) continue;
-            bombCandidates.push([...g.slice(0, size - useWild), ...wilds.slice(0, useWild)]);
-        }
-    }
-    bombCandidates.sort((a, b) => a.length - b.length);
-    for (const cand of bombCandidates) {
-        const r = tryCombo(cand);
-        if (r) return r;
-    }
-
-    // 四王炸
-    const jokers = cards.filter(card => card.rank === '小王' || card.rank === '大王');
-    if (jokers.length === 4) {
-        const r = tryCombo(jokers);
-        if (r) return r;
-    }
-    return null;
+    toast(`提示：${SHAPE_NAMES[detectCombo(found, roomState.level).shapeType]}`);
 }
 
 function showResult(result) {

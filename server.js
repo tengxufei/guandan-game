@@ -7,7 +7,7 @@ const os = require('os');
 const {
     LEVEL_ORDER, SHAPE_NAMES,
     createDoubleDeck, shuffle, isWildCard, singleCardRank,
-    detectCombo, canBeat,
+    detectCombo, findBeatingCombo,
 } = require('./cardLogic');
 
 const PLAYERS_PER_ROOM = 3;
@@ -157,10 +157,11 @@ class GameRoom {
             normalized.push({ suit: card.suit, rank: card.rank });
         }
 
-        const combo = detectCombo(normalized, this.level);
-        if (!combo) return { error: '这不是有效的牌型' };
-        if (!canBeat(combo, this.lastCombo)) {
-            return { error: this.lastCombo ? '你的牌压不过上家' : '出牌无效' };
+        // 万能牌让同一手牌可能有多种读法，只要存在一种压得过上家的读法就算数
+        const combo = findBeatingCombo(normalized, this.level, this.lastCombo);
+        if (!combo) {
+            const anyShape = detectCombo(normalized, this.level);
+            return { error: anyShape ? '你的牌压不过上家' : '这不是有效的牌型' };
         }
 
         // 从手牌中移除（每张只移除一次）
@@ -236,23 +237,25 @@ class GameRoom {
     finishGame() {
         this.status = 'finished';
         this.lastCombo = null;
-        // 头游所在名次决定升几级：头游升3级听着太快，这里用常见的三人简化规则：
-        // 头游升2级，二游升1级，末游不升。
+        // 三人局的房规：头游赢一局升一级，从 2 一路打到 A。
+        // （之前一次升两级，结果 3/5/7/9/J/K 这些级永远轮不到，
+        //  一半的牌当不上万能牌，打起来少了很多变化。）
         const winnerId = this.finishOrder[0];
         const winner = this.getPlayer(winnerId);
-        const upgrade = 2;
         const currentIdx = LEVEL_ORDER.indexOf(this.level);
-        const nextIdx = currentIdx + upgrade;
+        const nextIdx = currentIdx + 1;
+
         this.lastResult = {
             finishOrder: this.finishOrder.slice(),
             winnerName: winner ? winner.name : '',
             fromLevel: this.level,
-            upgrade,
         };
-        if (nextIdx >= LEVEL_ORDER.length) {
+
+        if (this.level === 'A' || nextIdx >= LEVEL_ORDER.length) {
+            // 打到 A 再赢一局，整场结束，下一场从 2 重新开始
             this.lastResult.matchOver = true;
-            this.lastResult.toLevel = 'A';
-            this.level = 'A';
+            this.lastResult.toLevel = '2';
+            this.level = '2';
         } else {
             this.level = LEVEL_ORDER[nextIdx];
             this.lastResult.toLevel = this.level;
@@ -492,6 +495,10 @@ function handleNextRound(player) {
     }
     if (!room.isFull()) {
         player.send({ type: 'error', message: '需要3个人才能开始' });
+        return;
+    }
+    if (room.status === 'playing') {
+        player.send({ type: 'error', message: '这局还没打完' });
         return;
     }
     room.resetForNextRound();

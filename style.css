@@ -1,6 +1,9 @@
 * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 
 :root {
+    /* 手牌叠放：露出的宽度要够手指点(27px)，换点数时多让7px当分组间隔 */
+    --tight: -19px;
+    --loose: -12px;
     --green: #1b6b3a;
     --green-dark: #14532b;
     --gold: #e8b923;
@@ -18,7 +21,7 @@ body {
     -webkit-font-smoothing: antialiased;
 }
 
-#app { max-width: 900px; margin: 0 auto; padding: 12px; }
+#app { max-width: 900px; margin: 0 auto; padding: 10px 10px 6px; }
 .hidden { display: none !important; }
 
 h1 { text-align: center; color: #fff; font-size: 1.9rem; margin: 18px 0 4px; letter-spacing: 2px; }
@@ -65,75 +68,129 @@ input[type=text]:focus { border-color: var(--green); }
 .hint { text-align: center; color: var(--muted); font-size: .85rem; padding: 10px; }
 
 /* ---------- 游戏界面 ---------- */
-.game-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+.game-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 7px; }
 .header-left { display: flex; gap: 10px; flex-wrap: wrap; }
 .room-tag, .level-tag { color: rgba(255,255,255,.8); font-size: .82rem; }
 .room-tag b, .level-tag b { color: var(--gold); letter-spacing: 1px; }
 
 .status-bar {
     background: rgba(255,255,255,.12); color: #fff; text-align: center;
-    padding: 11px; border-radius: 10px; font-size: .92rem; margin-bottom: 12px;
+    padding: 8px; border-radius: 10px; font-size: .9rem; margin-bottom: 8px;
 }
 .status-bar.my-turn { background: var(--gold); color: #3a2c00; font-weight: 700; }
 
-.opponents { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
+.opponents { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
 .opponent {
     background: rgba(255,255,255,.1); border: 2px solid transparent;
-    border-radius: 12px; padding: 10px; text-align: center; color: #fff;
+    border-radius: 12px; padding: 7px 8px; text-align: center; color: #fff;
 }
 .opponent.active { border-color: var(--gold); background: rgba(232,185,35,.18); }
 .opponent.done { opacity: .55; }
-.opp-name { font-size: .9rem; font-weight: 600; margin-bottom: 3px; }
-.opp-meta { font-size: 1.3rem; font-weight: 700; color: var(--gold); }
-.opp-meta span { font-size: 1.3rem; }
-.opp-tag { font-size: .75rem; color: var(--gold); min-height: 16px; }
+.opp-name { font-size: .9rem; font-weight: 600; margin-bottom: 5px; }
+.opp-fan { display: flex; justify-content: center; height: 26px; align-items: center; margin-bottom: 2px; }
+.opp-meta { font-size: 1.15rem; font-weight: 700; color: var(--gold); }
+.opp-meta span { font-size: 1.15rem; }
+.opp-tag { font-size: .75rem; min-height: 18px; font-weight: 700; }
+.opp-tag.rank { color: var(--gold); }
+.opp-tag.pass {
+    color: #cdd6df; background: rgba(255,255,255,.14);
+    border-radius: 9px; display: inline-block; padding: 1px 9px;
+}
+.opponent.active { border-color: var(--gold); background: rgba(232,185,35,.18); }
+.opponent.active .opp-name::after { content: ' ●'; color: var(--gold); }
 
 .table-area {
-    background: var(--green-dark); border-radius: 14px; padding: 14px;
-    min-height: 130px; display: flex; flex-direction: column;
-    align-items: center; justify-content: center; gap: 8px; margin-bottom: 12px;
+    position: relative;
+    background: var(--green-dark); border-radius: 14px; padding: 8px 10px;
+    min-height: 88px; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 4px; margin-bottom: 8px;
     border: 2px solid rgba(255,255,255,.08);
 }
-.table-label { color: rgba(255,255,255,.75); font-size: .82rem; min-height: 16px; }
-.played-cards { display: flex; flex-wrap: wrap; gap: 4px; justify-content: center; min-height: 62px; align-items: center; }
+.table-label { color: rgba(255,255,255,.8); font-size: .84rem; min-height: 16px; font-weight: 600; }
+.played-cards { display: flex; flex-wrap: wrap; gap: 2px; justify-content: center; min-height: 60px; align-items: center; }
+.table-empty { color: rgba(255,255,255,.35); font-size: .85rem; }
 .table-hint { font-size: .85rem; min-height: 18px; font-weight: 600; }
 .table-hint.good { color: #7ee2a8; }
 .table-hint.bad { color: #ff9b9b; }
 
-.my-area { background: rgba(255,255,255,.08); border-radius: 14px; padding: 12px; margin-bottom: 10px; }
-.my-header { display: flex; justify-content: space-between; color: #fff; font-size: .88rem; margin-bottom: 10px; }
+.my-area { background: rgba(255,255,255,.08); border-radius: 14px; padding: 8px 8px 4px; margin-bottom: 8px; }
+.my-header { display: flex; justify-content: space-between; color: #fff; font-size: .85rem; margin-bottom: 2px; }
 .my-count b { color: var(--gold); font-size: 1.1rem; }
-.my-cards {
-    display: flex; flex-wrap: wrap; gap: 4px; justify-content: center;
-    max-height: 46vh; overflow-y: auto; padding: 4px 4px 14px;
-}
+/* 顶部留出空间，选中的牌抬起来时不会顶到上面的名字 */
+.my-cards { padding: 16px 2px 4px; }
+
+/* 手牌按行叠放，像真牌一样只露出左边角标，
+   36张牌才能一屏看完，不用滚动 */
+.card-row { display: flex; justify-content: center; padding: 5px 0 0; }
 
 .card {
+    position: relative;
     width: 46px; height: 66px; background: #fff; border-radius: 6px;
-    display: flex; flex-direction: column; align-items: center; justify-content: center;
-    font-weight: 700; cursor: pointer; user-select: none;
-    box-shadow: 0 2px 5px rgba(0,0,0,.3); transition: transform .12s;
-    border: 2px solid transparent; flex-shrink: 0;
+    cursor: pointer; user-select: none; flex-shrink: 0;
+    box-shadow: 0 1px 4px rgba(0,0,0,.35);
+    transition: transform .12s, box-shadow .12s;
+    border: 1.5px solid #cfd8e0;
 }
-.card .rank { font-size: 17px; line-height: 1; }
-.card .suit { font-size: 13px; line-height: 1.3; }
-.card.red { color: #d63a3a; }
-.card.black { color: #22303c; }
-.card.selected { transform: translateY(-12px); border-color: var(--gold); box-shadow: 0 8px 16px rgba(232,185,35,.5); }
-.card.wild { background: linear-gradient(160deg, #fff 60%, #ffeaa0 100%); border-color: var(--gold); }
-.card.small { width: 40px; height: 58px; cursor: default; box-shadow: 0 2px 4px rgba(0,0,0,.35); }
+/* 左上角角标：牌叠起来时露出的就是这一条，所以必须靠左对齐 */
+.card .corner {
+    position: absolute; top: 2px; left: 3px;
+    display: flex; flex-direction: column; align-items: center; line-height: 1;
+}
+.card .rank { font-size: 15px; font-weight: 800; letter-spacing: -1px; }
+.card .suit { font-size: 11px; margin-top: 1px; }
+/* 中间的大花色，牌没被完全盖住时能看到 */
+.card .pip { position: absolute; bottom: 5px; right: 5px; font-size: 15px; opacity: .5; }
+.card.red { color: #d1344b; }
+.card.black { color: #1f2b36; }
+
+.card.selected {
+    transform: translateY(-20px);
+    border-color: var(--gold); border-width: 2px;
+    box-shadow: 0 10px 18px rgba(232,185,35,.55);
+}
+.card.selected .corner { color: inherit; }
+/* 抬起来后露出的上边缘加一条金边，被右边的牌压住时也看得出选中了 */
+.card.selected::before {
+    content: ''; position: absolute; inset: -2px -2px auto -2px; height: 4px;
+    background: var(--gold); border-radius: 4px 4px 0 0;
+}
+.card.wild {
+    background: linear-gradient(165deg, #fffdf3 55%, #ffe58a 100%);
+    border-color: var(--gold);
+}
+.card.wild::after {
+    content: '万'; position: absolute; top: 2px; right: 3px;
+    font-size: 9px; color: #a07800; font-weight: 700;
+}
+/* 级牌（任意花色）加个淡淡的底，提醒它比A和2都大 */
+.card.levelcard { background: linear-gradient(165deg, #fff 60%, #e3f0ff 100%); }
+
+/* 牌桌上打出的牌：不可点，正常并排 */
+.card.small {
+    width: 42px; height: 60px; cursor: default; margin: 0 1px;
+    box-shadow: 0 2px 6px rgba(0,0,0,.4);
+}
 .card.small .rank { font-size: 15px; }
 .card.small .suit { font-size: 11px; }
+.card.small .pip { display: none; }
 
-.action-bar { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; padding-bottom: 10px; }
-.action-bar .btn { min-width: 88px; }
+/* 对手的牌背 */
+.card-back {
+    width: 15px; height: 34px; border-radius: 3px; flex-shrink: 0;
+    background: repeating-linear-gradient(45deg, #2f5d8a, #2f5d8a 3px, #24496d 3px, #24496d 6px);
+    border: 1px solid rgba(255,255,255,.25);
+    margin-left: -5px;
+}
+.card-back:first-child { margin-left: 0; }
 
-/* 提示条放在顶部：放底部会盖住手牌，选牌时很碍事 */
+.action-bar { display: flex; gap: 6px; justify-content: center; flex-wrap: wrap; }
+.action-bar .btn { min-width: 74px; padding: 11px 14px; }
+
 .toast {
-    position: fixed; left: 50%; top: 14px; transform: translateX(-50%);
-    background: rgba(0,0,0,.88); color: #fff; padding: 11px 20px; border-radius: 22px;
-    font-size: .88rem; z-index: 50; max-width: 86vw; text-align: center;
-    box-shadow: 0 4px 14px rgba(0,0,0,.4);
+    position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+    background: rgba(0,0,0,.86); color: #fff; padding: 9px 18px; border-radius: 20px;
+    font-size: .86rem; z-index: 50; max-width: 90%; text-align: center;
+    box-shadow: 0 4px 14px rgba(0,0,0,.45); pointer-events: none;
 }
 
 .modal {
@@ -151,7 +208,39 @@ input[type=text]:focus { border-color: var(--green); }
 .result-level { color: var(--muted); font-size: .9rem; margin-bottom: 8px; }
 
 @media (min-width: 640px) {
-    .card { width: 54px; height: 78px; }
-    .card .rank { font-size: 20px; }
-    .card .suit { font-size: 15px; }
+    .card { width: 56px; height: 80px; }
+    .card .rank { font-size: 18px; }
+    .card .suit { font-size: 13px; }
+    .card .pip { font-size: 18px; }
+    .card.small { width: 50px; height: 72px; }
+    .card-back { width: 18px; height: 42px; }
+}
+
+/* 大小王：用"王"+大/小，窄条也看得清 */
+.card.joker .rank { font-size: 15px; }
+.card.joker .suit { font-size: 11px; font-weight: 700; }
+.card.joker .pip { font-size: 12px; }
+
+/* 小屏手机（如 iPhone SE）：整体收紧，保证36张牌+按钮一屏放得下 */
+@media (max-height: 720px) {
+    h1 { font-size: 1.6rem; margin: 10px 0 2px; }
+    .card { width: 41px; height: 57px; }
+    .card .rank { font-size: 14px; }
+    .card .suit { font-size: 10px; }
+    .card .pip { font-size: 12px; bottom: 3px; right: 3px; }
+    .card-row { padding: 4px 0 0; }
+    .my-cards { padding: 14px 2px 2px; }
+    .my-area { padding: 6px 6px 2px; }
+    .status-bar { padding: 6px; font-size: .85rem; margin-bottom: 6px; }
+    .opponents { margin-bottom: 6px; }
+    .opponent { padding: 5px 6px; }
+    .opp-fan { height: 20px; }
+    .card-back { height: 27px; }
+    .opp-name { font-size: .82rem; margin-bottom: 3px; }
+    .opp-meta, .opp-meta span { font-size: 1rem; }
+    .table-area { min-height: 74px; padding: 6px 8px; margin-bottom: 6px; }
+    .played-cards { min-height: 50px; }
+    .card.small { width: 38px; height: 54px; }
+    .action-bar .btn { padding: 9px 12px; font-size: 14px; }
+    .game-header { margin-bottom: 5px; }
 }

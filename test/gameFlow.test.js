@@ -49,6 +49,15 @@ function send(st, type, payload = {}) {
     st.ws.send(JSON.stringify({ type, ...payload }));
 }
 
+// 清空消息队列时，必须把 Promise.race 留下的、没人再 await 的等待器也清掉，
+// 否则后面到达的同类型消息会被这些"僵尸"等待器取走，新的 waitFor 永远等不到
+function reset(st) {
+    st.queue.length = 0;
+    st.waiters.forEach(w => clearTimeout(w.timer));
+    st.waiters = [];
+    st.gameOver = null;
+}
+
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 // 简易AI：能出就出最小的合法牌，否则不要
@@ -171,12 +180,12 @@ async function playOneGame(ps, byId, label) {
         });
 
         // 非房主不能开始
-        for (const p of ps) p.queue.length = 0;
+        ps.forEach(reset);
         send(p2, 'start_game');
         const err = await waitFor(p2, 'error', 2000);
         check('非房主不能开始游戏', () => assert.match(err.message, /房主/));
 
-        for (const p of ps) p.queue.length = 0;
+        ps.forEach(reset);
         send(p1, 'start_game');
         await Promise.all(ps.map(p => waitFor(p, 'game_started')));
         await Promise.all(ps.map(p => waitFor(p, 'your_cards')));
@@ -203,14 +212,14 @@ async function playOneGame(ps, byId, label) {
         // 非当前玩家出牌应被拒绝
         const st0 = ps.find(p => p.state).state;
         const notTurn = ps.find(p => p.id !== st0.currentPlayerId);
-        notTurn.queue.length = 0;
+        reset(notTurn);
         send(notTurn, 'play_cards', { cards: [notTurn.cards[0]] });
         const turnErr = await waitFor(notTurn, 'error', 2000);
         check('不是自己回合时出牌被拒绝', () => assert.match(turnErr.message, /轮到/));
 
         // 伪造不在手上的牌
         const curP = byId[st0.currentPlayerId];
-        curP.queue.length = 0;
+        reset(curP);
         send(curP, 'play_cards', { cards: [{ suit: '♠', rank: '不存在' }] });
         const fakeErr = await waitFor(curP, 'error', 2000);
         check('出手里没有的牌被拒绝', () => assert.ok(fakeErr.message.length > 0));
@@ -234,8 +243,26 @@ async function playOneGame(ps, byId, label) {
             assert.strictEqual(gameOver.result.order[0], gameOver.result.winnerName);
         });
 
+        console.log('\n开局中不能重新发牌');
+        // 再开一局，然后在对局进行中尝试 next_round
+        ps.forEach(reset);
+        send(p1, 'next_round');
+        await Promise.all(ps.map(p => waitFor(p, 'game_started', 3000)));
+        await Promise.all(ps.map(p => waitFor(p, 'your_cards', 3000)));
+        await sleep(150);
+        const handBefore = ps[0].cards.map(c => `${c.suit}${c.rank}`).join(',');
+        reset(p1);
+        send(p1, 'next_round');
+        const midErr = await waitFor(p1, 'error', 2000).catch(() => null);
+        await sleep(200);
+        const handAfter = ps[0].cards.map(c => `${c.suit}${c.rank}`).join(',');
+        check('对局进行中房主不能重新发牌', () => {
+            assert.ok(midErr, '应该返回错误，实际没有');
+            assert.strictEqual(handBefore, handAfter, '手牌被重新发了');
+        });
+
         console.log('\n断线处理');
-        for (const p of ps) p.queue.length = 0;
+        ps.forEach(reset);
         p3.ws.close();
         await sleep(300);
         check('有人离开后房间状态回到等待', () => {
