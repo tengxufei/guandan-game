@@ -243,6 +243,44 @@ async function playOneGame(ps, byId, label) {
             assert.strictEqual(gameOver.result.order[0], gameOver.result.winnerName);
         });
 
+        console.log('\n接风（头游走后下家直接领出）');
+        {
+            const { GameRoom } = require('../server.js');
+            const cc = (x) => { const a = Array.from(x); return { suit: a[0], rank: a.slice(1).join('') }; };
+            const hh = (...x) => x.map(cc);
+            const fake = (n) => ({ name: n, ws: { readyState: 3 }, send() {}, cards: [], playerId: null, finished: false });
+
+            const room = new GameRoom('JF');
+            const A = fake('A'), B = fake('B'), C = fake('C');
+            [A, B, C].forEach(x => room.addPlayer(x));
+            room.startGame();
+            room.level = '2';
+            // A 只剩一张大王，打出去就走人；谁也压不过大王
+            A.cards = hh('🃏大王');
+            B.cards = hh('♠3', '♠4');
+            C.cards = hh('♦5', '♦6');
+            room.currentIndex = 0;
+            room.lastCombo = null; room.lastPlayerId = null; room.passCount = 0;
+
+            const played = room.playCards(A.playerId, hh('🃏大王'));
+            check('头游出完牌后牌桌清空（不用再去压离场玩家的牌）', () => {
+                assert.ok(!played.error, played.error);
+                assert.strictEqual(room.lastCombo, null, '牌桌应该清空');
+            });
+            check('接风的是头游的下家', () => {
+                assert.strictEqual(played.jiefengBy, room.currentPlayer().playerId);
+                assert.strictEqual(room.currentPlayer().name, 'B');
+            });
+            check('下家可以直接自由领出，不必先过牌', () => {
+                const r = room.playCards(B.playerId, hh('♠3'));
+                assert.ok(!r.error, `本该能直接出牌，却报: ${r.error}`);
+            });
+            check('接风后仍是正常轮转（C 需要压 B 的牌）', () => {
+                const r = room.playCards(C.playerId, hh('♦5'));
+                assert.ok(!r.error, r.error);
+            });
+        }
+
         console.log('\n开局中不能重新发牌');
         // 再开一局，然后在对局进行中尝试 next_round
         ps.forEach(reset);

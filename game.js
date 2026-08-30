@@ -138,6 +138,13 @@ function handle(msg) {
         case 'notice':
             toast(msg.message);
             break;
+        case 'jiefeng':
+            // 有人出完走了，牌桌清空由下一家领出
+            passedThisRound.clear();
+            $('played-cards').innerHTML = '<span class="table-empty">接风 — 重新领出</span>';
+            $('table-label').textContent = '';
+            toast(msg.playerId === myId ? '轮到你接风，随意出牌' : msg.message);
+            break;
         case 'game_aborted':
             toast(msg.message);
             $('played-cards').innerHTML = '';

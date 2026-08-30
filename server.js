@@ -204,7 +204,18 @@ class GameRoom {
         }
 
         this.advanceTurn();
-        return { ok: true, combo, cards: normalized, justFinished };
+
+        // 接风：有人出完牌走人后，牌桌清空，由下一家直接领出新一轮。
+        // 否则剩下的人还得去压一个已经离场的人的牌，压不过就只能空转一圈过牌。
+        let jiefengBy = null;
+        if (justFinished) {
+            this.lastCombo = null;
+            this.lastPlayerId = null;
+            this.passCount = 0;
+            jiefengBy = this.currentPlayer().playerId;
+        }
+
+        return { ok: true, combo, cards: normalized, justFinished, jiefengBy };
     }
 
     pass(playerId) {
@@ -537,6 +548,15 @@ function handlePlayCards(player, cards) {
         const place = room.finishOrder.indexOf(player.playerId) + 1;
         const placeName = ['头游', '二游', '末游'][place - 1] || `第${place}名`;
         broadcastToRoom(room, { type: 'notice', message: `${player.name} 出完了牌，${placeName}！` });
+
+        if (result.jiefengBy && !result.gameOver) {
+            const next = room.getPlayer(result.jiefengBy);
+            broadcastToRoom(room, {
+                type: 'jiefeng',
+                playerId: result.jiefengBy,
+                message: `由 ${next ? next.name : '下一家'} 接风，重新领出`,
+            });
+        }
     }
 
     player.send({ type: 'your_cards', cards: player.cards });
