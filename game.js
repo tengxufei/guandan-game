@@ -49,6 +49,9 @@ document.addEventListener('DOMContentLoaded', () => {
         applySort();
         toast(sortMode === 'group' ? '已把对子/三张排到一起' : '已按大小排序');
     });
+    document.querySelectorAll('.deck-opt').forEach(btn => {
+        btn.addEventListener('click', () => send('set_decks', { decks: Number(btn.dataset.decks) }));
+    });
     window.addEventListener('resize', () => renderMyCards());
     $('result-close').addEventListener('click', () => $('result-modal').classList.add('hidden'));
 });
@@ -177,7 +180,7 @@ function renderRoomList(rooms) {
     $('no-rooms').style.display = rooms.length ? 'none' : 'block';
     rooms.forEach(r => {
         const li = document.createElement('li');
-        const status = r.status === 'playing' ? '游戏中' : `${r.playerCount}/3`;
+        const status = r.status === 'playing' ? '游戏中' : `${r.playerCount}/3 · ${r.decks || 2}副`;
         li.innerHTML = `<span class="room-code">${r.roomId}</span>
             <span class="room-names">${r.names.join('、') || '空房间'}</span>
             <span class="room-status">${status}</span>`;
@@ -200,9 +203,23 @@ function opponentsInOrder() {
     return out;
 }
 
+function currentDecks() {
+    return (roomState && roomState.decks) || 2;
+}
+
 function render() {
     if (!roomState) return;
     $('level-badge').textContent = roomState.level;
+    $('deck-badge').textContent = currentDecks();
+
+    // 副数选择：只有房主、且没在对局中才能改
+    const canPick = roomState.status !== 'playing' && myId === roomState.hostId;
+    $('deck-picker').classList.toggle('hidden', roomState.status === 'playing');
+    document.querySelectorAll('.deck-opt').forEach(btn => {
+        const n = Number(btn.dataset.decks);
+        btn.classList.toggle('active', n === currentDecks());
+        btn.disabled = !canPick;
+    });
 
     const me = roomState.players.find(p => p.playerId === myId);
     $('my-name-label').textContent = (me ? me.name : myName) + (me && me.isHost ? '（房主）' : '');
@@ -302,8 +319,8 @@ function updateButtons() {
 
     const cards = selectedCards();
     const last = lastComboForCompare();
-    const beating = cards.length ? findBeatingCombo(cards, roomState.level, last) : null;
-    const anyShape = cards.length ? detectCombo(cards, roomState.level) : null;
+    const beating = cards.length ? findBeatingCombo(cards, roomState.level, last, currentDecks()) : null;
+    const anyShape = cards.length ? detectCombo(cards, roomState.level, currentDecks()) : null;
 
     $('play-btn').disabled = !myTurn || !beating;
     $('pass-btn').disabled = !myTurn || !roomState.lastCombo;
@@ -332,7 +349,7 @@ function show(el, visible) {
 
 function lastComboForCompare() {
     if (!roomState || !roomState.lastCombo) return null;
-    return detectCombo(roomState.lastCombo.cards, roomState.level);
+    return detectCombo(roomState.lastCombo.cards, roomState.level, currentDecks());
 }
 
 function selectedCards() {
@@ -472,7 +489,7 @@ function doPlay() {
 function doHint() {
     const last = lastComboForCompare();
     const level = roomState.level;
-    const found = suggestPlay(myCards, level, last);
+    const found = suggestPlay(myCards, level, last, currentDecks());
     if (!found) {
         toast(last ? '没有能压过上家的牌' : '没有可出的牌');
         return;
@@ -480,7 +497,7 @@ function doHint() {
     selected = new Set(found.map(card => myCards.indexOf(card)));
     renderMyCards();
     updateButtons();
-    toast(`提示：${SHAPE_NAMES[detectCombo(found, roomState.level).shapeType]}`);
+    toast(`提示：${SHAPE_NAMES[detectCombo(found, roomState.level, currentDecks()).shapeType]}`);
 }
 
 function showResult(result) {

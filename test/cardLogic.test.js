@@ -1,6 +1,6 @@
 const assert = require('assert');
 const { detectCombo, detectCombos, findBeatingCombo, suggestPlay,
-    canBeat, createDoubleDeck, SHAPE_NAMES } = require('../cardLogic');
+    canBeat, createDeck, SHAPE_NAMES } = require('../cardLogic');
 
 let passed = 0;
 let failed = 0;
@@ -31,8 +31,8 @@ function c(str) {
 function hand(...strs) {
     return strs.map(c);
 }
-function shape(cards, level) {
-    const combo = detectCombo(cards, level);
+function shape(cards, level, decks = 2) {
+    const combo = detectCombo(cards, level, decks);
     return combo ? combo.shapeType : null;
 }
 
@@ -170,17 +170,58 @@ group('比牌 - 炸弹体系', () => {
             hand('🃏小王', '🃏小王', '🃏大王', '🃏大王'))));
 });
 
-group('牌堆', () => {
-    test('两副牌共108张', () => assert.strictEqual(createDoubleDeck().length, 108));
-    test('每种普通牌各8张(2副x4花色)', () => {
-        const deck = createDoubleDeck();
-        const fives = deck.filter(card => card.rank === '5');
-        assert.strictEqual(fives.length, 8);
+group('牌堆 / 副数', () => {
+    test('默认两副牌共108张', () => assert.strictEqual(createDeck().length, 108));
+    test('1副54张、2副108张、3副162张', () => {
+        assert.strictEqual(createDeck(1).length, 54);
+        assert.strictEqual(createDeck(2).length, 108);
+        assert.strictEqual(createDeck(3).length, 162);
     });
-    test('大小王各2张', () => {
-        const deck = createDoubleDeck();
-        assert.strictEqual(deck.filter(card => card.rank === '大王').length, 2);
-        assert.strictEqual(deck.filter(card => card.rank === '小王').length, 2);
+    test('三种副数都能被3整除(3人平分)', () => {
+        [1, 2, 3].forEach(d => assert.strictEqual(createDeck(d).length % 3, 0, `${d}副不能平分`));
+    });
+    test('每个点数的张数 = 副数x4', () => {
+        [1, 2, 3].forEach(d => {
+            const n = createDeck(d).filter(card => card.rank === '5').length;
+            assert.strictEqual(n, d * 4, `${d}副牌里5有${n}张`);
+        });
+    });
+    test('大小王各 = 副数', () => {
+        [1, 2, 3].forEach(d => {
+            const deck = createDeck(d);
+            assert.strictEqual(deck.filter(card => card.rank === '大王').length, d);
+            assert.strictEqual(deck.filter(card => card.rank === '小王').length, d);
+        });
+    });
+});
+
+group('不同副数下的王炸与大炸弹', () => {
+    test('1副牌：大王+小王 就是王炸', () =>
+        assert.strictEqual(shape(hand('🃏大王', '🃏小王'), LV, 1), 'joker_bomb'));
+    test('2副牌：大王+小王 不算王炸(要凑齐四张)', () =>
+        assert.strictEqual(shape(hand('🃏大王', '🃏小王'), LV, 2), null));
+    test('2副牌：四王炸', () =>
+        assert.strictEqual(shape(hand('🃏大王', '🃏大王', '🃏小王', '🃏小王'), LV, 2), 'joker_bomb'));
+    test('3副牌：六王炸', () =>
+        assert.strictEqual(shape(hand('🃏大王', '🃏大王', '🃏大王', '🃏小王', '🃏小王', '🃏小王'), LV, 3), 'joker_bomb'));
+    test('3副牌：四张王不算王炸(没凑齐六张)', () =>
+        assert.strictEqual(shape(hand('🃏大王', '🃏大王', '🃏小王', '🃏小王'), LV, 3), null));
+
+    test('炸弹不再卡在8张：8张9+2张万能牌 = 10张炸弹', () => {
+        const ten = hand('♠9', '♥9', '♣9', '♦9', '♠9', '♥9', '♣9', '♦9', '♥2', '♥2');
+        const combo = detectCombo(ten, LV, 2);
+        assert.ok(combo, '10张同点数应该是炸弹');
+        assert.strictEqual(combo.shapeType, 'bomb');
+    });
+    test('张数越多的炸弹越大', () => {
+        const nine = hand('♠9', '♥9', '♣9', '♦9', '♠9', '♥9', '♣9', '♦9', '♥2');
+        const eight = hand('♠A', '♥A', '♣A', '♦A', '♠A', '♥A', '♣A', '♦A');
+        assert.ok(canBeat(detectCombo(nine, LV, 2), detectCombo(eight, LV, 2)));
+    });
+    test('王炸压得过超大炸弹', () => {
+        const jokerBomb = hand('🃏大王', '🃏大王', '🃏小王', '🃏小王');
+        const big = hand('♠9', '♥9', '♣9', '♦9', '♠9', '♥9', '♣9', '♦9', '♥2', '♥2');
+        assert.ok(canBeat(detectCombo(jokerBomb, LV, 2), detectCombo(big, LV, 2)));
     });
 });
 

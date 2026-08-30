@@ -70,8 +70,25 @@ input[type=text]:focus { border-color: var(--green); }
 /* ---------- 游戏界面 ---------- */
 .game-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 7px; }
 .header-left { display: flex; gap: 10px; flex-wrap: wrap; }
-.room-tag, .level-tag { color: rgba(255,255,255,.8); font-size: .82rem; }
-.room-tag b, .level-tag b { color: var(--gold); letter-spacing: 1px; }
+.room-tag, .level-tag, .deck-tag { color: rgba(255,255,255,.8); font-size: .82rem; }
+.room-tag b, .level-tag b, .deck-tag b { color: var(--gold); letter-spacing: 1px; }
+
+/* 房主在开局前选用几副牌 */
+.deck-picker {
+    background: rgba(255,255,255,.08); border-radius: 10px;
+    padding: 8px 10px; margin-bottom: 8px; text-align: center;
+}
+.deck-label { color: rgba(255,255,255,.7); font-size: .8rem; display: block; margin-bottom: 6px; }
+.deck-options { display: flex; gap: 6px; justify-content: center; }
+.deck-opt {
+    flex: 1; max-width: 110px; padding: 7px 4px; border: 2px solid rgba(255,255,255,.2);
+    background: rgba(255,255,255,.06); color: #fff; border-radius: 9px;
+    font-size: 14px; font-weight: 700; cursor: pointer; font-family: inherit;
+    display: flex; flex-direction: column; align-items: center; gap: 2px;
+}
+.deck-opt em { font-style: normal; font-size: 10px; opacity: .6; font-weight: 400; }
+.deck-opt.active { border-color: var(--gold); background: rgba(232,185,35,.2); color: var(--gold); }
+.deck-opt:disabled { opacity: .45; cursor: default; }
 
 .status-bar {
     background: rgba(255,255,255,.12); color: #fff; text-align: center;

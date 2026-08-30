@@ -6,12 +6,13 @@ const os = require('os');
 
 const {
     LEVEL_ORDER, SHAPE_NAMES,
-    createDoubleDeck, shuffle, isWildCard, singleCardRank,
+    createDeck, shuffle, isWildCard, singleCardRank,
     detectCombo, findBeatingCombo,
 } = require('./cardLogic');
 
 const PLAYERS_PER_ROOM = 3;
-const CARDS_PER_PLAYER = 36; // 108 / 3
+const ALLOWED_DECKS = [1, 2, 3];
+const DEFAULT_DECKS = 2; // 掼蛋标准就是两副牌：108张，3人正好每人36张
 
 function cardKey(card) {
     return `${card.suit}${card.rank}`;
@@ -22,6 +23,7 @@ class GameRoom {
         this.roomId = roomId;
         this.players = [];
         this.hostId = null;
+        this.decks = DEFAULT_DECKS;
         this.level = '2';
         this.status = 'waiting'; // waiting | playing | finished
         this.currentIndex = 0;
@@ -68,10 +70,15 @@ class GameRoom {
         return this.players.find(p => p.playerId === playerId);
     }
 
+    cardsPerPlayer() {
+        return (this.decks * 54) / PLAYERS_PER_ROOM; // 54/108/162 都能被3整除
+    }
+
     startGame() {
-        const deck = shuffle(createDoubleDeck());
+        const deck = shuffle(createDeck(this.decks));
+        const per = this.cardsPerPlayer();
         this.players.forEach((player, i) => {
-            player.cards = deck.slice(i * CARDS_PER_PLAYER, (i + 1) * CARDS_PER_PLAYER);
+            player.cards = deck.slice(i * per, (i + 1) * per);
             sortHand(player.cards, this.level);
             player.finished = false;
         });
@@ -93,6 +100,7 @@ class GameRoom {
             roomId: this.roomId,
             status: this.status,
             level: this.level,
+            decks: this.decks,
             hostId: this.hostId,
             currentPlayerId: this.status === 'playing' && this.currentPlayer() ? this.currentPlayer().playerId : null,
             lastPlayerId: this.lastPlayerId,
@@ -158,9 +166,9 @@ class GameRoom {
         }
 
         // 万能牌让同一手牌可能有多种读法，只要存在一种压得过上家的读法就算数
-        const combo = findBeatingCombo(normalized, this.level, this.lastCombo);
+        const combo = findBeatingCombo(normalized, this.level, this.lastCombo, this.decks);
         if (!combo) {
-            const anyShape = detectCombo(normalized, this.level);
+            const anyShape = detectCombo(normalized, this.level, this.decks);
             return { error: anyShape ? '你的牌压不过上家' : '这不是有效的牌型' };
         }
 
@@ -387,6 +395,7 @@ function handleMessage(player, data) {
         case 'join_room': return handleJoinRoom(player, data.roomId);
         case 'leave_room': return handleLeaveRoom(player);
         case 'get_rooms': return sendRoomList(player);
+        case 'set_decks': return handleSetDecks(player, data.decks);
         case 'start_game': return handleStartGame(player);
         case 'play_cards': return handlePlayCards(player, data.cards);
         case 'pass': return handlePass(player);
@@ -474,6 +483,36 @@ function detachFromRoom(player, room, verb) {
         broadcastToRoom(room, { type: 'game_aborted', message: `${leavingName}${verb}，本局中止` });
     }
     broadcastRoomState(room);
+}
+
+function handleSetDecks(player, decks) {
+    const room = player.roomId ? rooms.get(player.roomId) : null;
+    if (!room) {
+        player.send({ type: 'error', message: '你不在房间中' });
+        return;
+    }
+    if (player.playerId !== room.hostId) {
+        player.send({ type: 'error', message: '只有房主可以设置牌副数' });
+        return;
+    }
+    if (room.status === 'playing') {
+        player.send({ type: 'error', message: '这局还没打完，不能换牌副数' });
+        return;
+    }
+    const n = Number(decks);
+    if (!ALLOWED_DECKS.includes(n)) {
+        player.send({ type: 'error', message: '只能选 1、2 或 3 副牌' });
+        return;
+    }
+    if (n === room.decks) return;
+
+    room.decks = n;
+    broadcastToRoom(room, {
+        type: 'notice',
+        message: `房主把牌改成 ${n} 副（共 ${n * 54} 张，每人 ${room.cardsPerPlayer()} 张）`,
+    });
+    broadcastRoomState(room);
+    broadcastRoomList();
 }
 
 function handleStartGame(player) {
@@ -628,6 +667,7 @@ function roomListPayload() {
             roomId,
             playerCount: room.players.length,
             status: room.status,
+            decks: room.decks,
             names: room.players.map(p => p.name),
         });
     });

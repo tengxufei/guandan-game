@@ -13,15 +13,19 @@ const PLAIN_RANK_VALUE = {
     'J': 11, 'Q': 12, 'K': 13, 'A': 14, '2': 15, '小王': 16, '大王': 17,
 };
 
-// 炸弹体系强弱：4炸 < 5炸 < 同花顺 < 6炸 < 7炸 < 8炸 < 四王炸
-const TIER = {
-    bomb4: 100, bomb5: 101, straightFlush: 102, bomb6: 103, bomb7: 104, bomb8: 105,
-    jokerBomb: 999,
-};
+// 炸弹体系强弱：4炸 < 5炸 < 同花顺 < 6炸 < 7炸 < 8炸 < …（张数越多越大）< 王炸
+const TIER = { straightFlush: 102, jokerBomb: 999 };
 
-function createDoubleDeck() {
+// 炸弹按张数定强弱，不写死上限：两副牌8张同点数再加万能牌能凑到10张，
+// 三副牌更多，写死上限会导致手里一大把同点数的牌反而打不出去。
+function bombTier(len) {
+    return len < 6 ? 96 + len : 97 + len; // 4→100, 5→101, (同花顺102), 6→103, 7→104 …
+}
+
+// decks = 用几副牌。1副54张、2副108张、3副162张，都能被3整除，正好平分
+function createDeck(decks = 2) {
     const deck = [];
-    for (let d = 0; d < 2; d++) {
+    for (let d = 0; d < decks; d++) {
         for (const suit of SUITS) {
             for (const rank of RANK_ORDER.concat(['2'])) {
                 deck.push({ suit, rank });
@@ -198,18 +202,18 @@ function detectStraightFlush(cards, level) {
     return straights;
 }
 
-function detectJokerBomb(cards) {
-    if (cards.length !== 4) return null;
+// 王炸 = 场上全部的王。用几副牌就有几张大王、几张小王，
+// 所以2副牌是四王炸(2大2小)，1副牌是双王炸(1大1小)，3副牌是六王炸。
+function detectJokerBomb(cards, decks) {
+    if (cards.length !== decks * 2) return null;
     const small = cards.filter(c => c.rank === '小王').length;
     const big = cards.filter(c => c.rank === '大王').length;
-    if (small === 2 && big === 2) return { rank: 9999 };
+    if (small === decks && big === decks) return { rank: 9999 };
     return null;
 }
 
-const BOMB_TIER_BY_LEN = { 4: TIER.bomb4, 5: TIER.bomb5, 6: TIER.bomb6, 7: TIER.bomb7, 8: TIER.bomb8 };
-
 // 列出这手牌所有合法的解读
-function detectCombos(cards, level) {
+function detectCombos(cards, level, decks = 2) {
     const out = [];
     if (!cards || cards.length === 0) return out;
     const len = cards.length;
@@ -222,12 +226,12 @@ function detectCombos(cards, level) {
         return out;
     }
 
-    const jokerBomb = detectJokerBomb(cards);
-    if (jokerBomb) out.push({ shapeType: 'joker_bomb', length: 4, rank: jokerBomb.rank, tier: TIER.jokerBomb });
+    const jokerBomb = detectJokerBomb(cards, decks);
+    if (jokerBomb) out.push({ shapeType: 'joker_bomb', length: len, rank: jokerBomb.rank, tier: TIER.jokerBomb });
 
     if (len === 2) add('pair', 0, detectNOfKind(cards, level, 2));
     if (len === 3) add('triple', 0, detectNOfKind(cards, level, 3));
-    if (len >= 4 && len <= 8) add('bomb', BOMB_TIER_BY_LEN[len], detectNOfKind(cards, level, len));
+    if (len >= 4) add('bomb', bombTier(len), detectNOfKind(cards, level, len));
     if (len === 4) add('triple_single', 0, detectTripleAttached(cards, level, 1));
     if (len === 5) {
         add('triple_pair', 0, detectTripleAttached(cards, level, 2));
@@ -247,16 +251,16 @@ function betterCombo(a, b) {
 }
 
 // 返回最有利的那种解读（牌型等级最高、点数最大），无解则 null
-function detectCombo(cards, level) {
-    const all = detectCombos(cards, level);
+function detectCombo(cards, level, decks = 2) {
+    const all = detectCombos(cards, level, decks);
     let best = null;
     for (const c of all) best = betterCombo(best, c);
     return best;
 }
 
 // 在所有解读里找一种能压过 lastCombo 的（同样取最有利的），没有则 null
-function findBeatingCombo(cards, level, lastCombo) {
-    const all = detectCombos(cards, level);
+function findBeatingCombo(cards, level, lastCombo, decks = 2) {
+    const all = detectCombos(cards, level, decks);
     let best = null;
     for (const c of all) {
         if (canBeat(c, lastCombo)) best = betterCombo(best, c);
@@ -279,10 +283,10 @@ function canBeat(newCombo, lastCombo) {
 
 // 提示功能：按上家牌型有针对性地找一手能压过的牌。
 // 不能盲目枚举组合——36张牌的全子集会卡死浏览器，所以按牌型定向搜索。
-function suggestPlay(cards, level, last) {
+function suggestPlay(cards, level, last, decks = 2) {
     const tryCombo = (subset) => {
         if (!subset || subset.some(x => !x)) return null;
-        return findBeatingCombo(subset, level, last) ? subset : null;
+        return findBeatingCombo(subset, level, last, decks) ? subset : null;
     };
 
     // 按点数分组（万能牌单独放，作百搭用）
@@ -408,10 +412,10 @@ function suggestPlay(cards, level, last) {
         if (r) return r;
     }
 
-    // 四王炸
+    // 王炸（张数随副数变化：1副=2张，2副=4张，3副=6张）
     const jokers = cards.filter(card => card.rank === '小王' || card.rank === '大王');
-    if (jokers.length === 4) {
-        const r = tryCombo(jokers);
+    if (jokers.length >= decks * 2) {
+        const r = tryCombo(jokers.slice(0, decks * 2));
         if (r) return r;
     }
     return null;
@@ -424,7 +428,7 @@ const SHAPE_NAMES = {
 
 const CardLogic = {
     SUITS, RANK_ORDER, LEVEL_ORDER, PLAIN_RANK_VALUE, TIER, SHAPE_NAMES,
-    createDoubleDeck, shuffle, isWildCard, singleCardRank, levelAwareRank,
+    createDeck, shuffle, isWildCard, singleCardRank, levelAwareRank,
     detectCombo, detectCombos, findBeatingCombo, suggestPlay, canBeat,
 };
 

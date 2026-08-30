@@ -42,11 +42,21 @@
             <div class="header-left">
                 <span class="room-tag">房间 <b id="room-code"></b></span>
                 <span class="level-tag">打 <b id="level-badge">2</b></span>
+                <span class="deck-tag"><b id="deck-badge">2</b>副牌</span>
             </div>
             <button id="leave-room-btn" class="btn btn-ghost btn-sm">退出</button>
         </header>
 
         <div id="status-bar" class="status-bar">等待玩家加入…</div>
+
+        <div id="deck-picker" class="deck-picker hidden">
+            <span class="deck-label">用几副牌</span>
+            <div class="deck-options">
+                <button class="deck-opt" data-decks="1">1副<em>18张/人</em></button>
+                <button class="deck-opt" data-decks="2">2副<em>36张/人</em></button>
+                <button class="deck-opt" data-decks="3">3副<em>54张/人</em></button>
+            </div>
+        </div>
 
         <div class="opponents">
             <div class="opponent" id="opp-left">
