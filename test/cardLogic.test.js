@@ -1,6 +1,6 @@
 const assert = require('assert');
 const { detectCombo, detectCombos, findBeatingCombo, suggestPlay,
-    canBeat, createDeck, SHAPE_NAMES } = require('../cardLogic');
+    canBeat, createDeck, isValidCard, shapeLabel, SHAPE_NAMES } = require('../cardLogic');
 
 let passed = 0;
 let failed = 0;
@@ -341,6 +341,61 @@ group('提示功能 (suggestPlay)', () => {
         assert.strictEqual(got.length, 1);
         assert.strictEqual(got[0].rank, '3');
     });
+});
+
+
+group('牌的合法性校验（防伪造）', () => {
+    test('真牌通过', () => {
+        assert.ok(isValidCard({ suit: '♠', rank: '3' }));
+        assert.ok(isValidCard({ suit: '♥', rank: '10' }));
+        assert.ok(isValidCard({ suit: '🃏', rank: '大王' }));
+    });
+    test('把花色和点数拆错位置的伪造牌被拒（cardKey 拼回来会撞上真牌）', () =>
+        assert.ok(!isValidCard({ suit: '', rank: '♠3' })));
+    test('不存在的花色被拒', () => {
+        assert.ok(!isValidCard({ suit: '♠1', rank: '0' }));
+        assert.ok(!isValidCard({ suit: 'X', rank: '5' }));
+    });
+    test('不存在的点数被拒', () => assert.ok(!isValidCard({ suit: '♠', rank: '11' })));
+    test('王必须配 🃏 花色', () => {
+        assert.ok(!isValidCard({ suit: '♠', rank: '大王' }));
+        assert.ok(!isValidCard({ suit: '🃏', rank: '5' }));
+    });
+    test('缺字段/类型不对被拒', () => {
+        assert.ok(!isValidCard(null));
+        assert.ok(!isValidCard({ suit: '♠' }));
+        assert.ok(!isValidCard({ suit: 1, rank: 3 }));
+    });
+});
+
+group('三带的"带牌"不能和三张同点数', () => {
+    test('四张同点数只算炸弹，不算三带一', () =>
+        assert.strictEqual(shape(hand('♠7', '♥7', '♣7', '♦7'), LV), 'bomb'));
+    test('五张同点数只算炸弹，不算三带二', () =>
+        assert.strictEqual(shape(hand('♠7', '♥7', '♣7', '♦7', '♠7'), LV), 'bomb'));
+    test('正常的三带二仍然有效', () =>
+        assert.strictEqual(shape(hand('♠7', '♥7', '♣7', '♦9', '♠9'), LV), 'triple_pair'));
+});
+
+group('提示能找到超过8张的炸弹', () => {
+    test('10张炸弹能压过8张炸弹（以前卡在8张上限，提示说没有）', () => {
+        const hand10 = hand('♠9', '♥9', '♣9', '♦9', '♠9', '♥9', '♣9', '♦9', '♥3', '♥3');
+        const last = detectCombo(hand('♠K', '♥K', '♣K', '♦K', '♠K', '♥K', '♣K', '♦K'), '3', 2);
+        assert.ok(findBeatingCombo(hand10, '3', last, 2), '服务器应该判定能压');
+        const got = suggestPlay(hand10, '3', last, 2);
+        assert.ok(got, '提示应该能找到');
+        assert.ok(got.length >= 9, `找到的应该是9张以上的炸弹，实际${got.length}张`);
+    });
+});
+
+group('王炸叫法随副数变化', () => {
+    test('1副=双王炸 2副=四王炸 3副=六王炸', () => {
+        assert.strictEqual(shapeLabel('joker_bomb', 1), '双王炸');
+        assert.strictEqual(shapeLabel('joker_bomb', 2), '四王炸');
+        assert.strictEqual(shapeLabel('joker_bomb', 3), '六王炸');
+    });
+    test('其他牌型叫法不变', () =>
+        assert.strictEqual(shapeLabel('pair_straight', 2), '连对'));
 });
 
 console.log(`\n${'='.repeat(40)}`);

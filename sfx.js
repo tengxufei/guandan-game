@@ -17,7 +17,10 @@ function ensureCtx() {
         if (!AC) return null;
         ctx = new AC();
     }
-    if (ctx.state === 'suspended') ctx.resume();
+    if (ctx.state === 'suspended') {
+        const r = ctx.resume();
+        if (r && r.catch) r.catch(() => {}); // 忽略 resume 失败，别产生未处理的 promise 拒绝
+    }
     return ctx;
 }
 
@@ -132,8 +135,9 @@ const Sfx = {
         if (!muted) Sfx.play('tap');
         return muted;
     },
-    // 用户第一次点击时叫一下，把 AudioContext 解锁
-    unlock() { ensureCtx(); },
+    // 用户第一次点击时叫一下，把 AudioContext 解锁。
+    // 有的浏览器会禁止创建 AudioContext，不能让它抛出去影响游戏
+    unlock() { try { ensureCtx(); } catch (e) {} },
 };
 
 globalThis.Sfx = Sfx;

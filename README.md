@@ -105,8 +105,8 @@
 
 ```bash
 npm test           # 跑全部测试
-npm run test:rules # 只测牌型和比牌规则（93项）
-npm run test:flow  # 只测完整对局流程（走真实WebSocket，17项）
+npm run test:rules # 只测牌型和比牌规则（105项）
+npm run test:flow  # 只测完整对局流程（走真实WebSocket，21项）
 ```
 
 `cardLogic.js` 是纯规则逻辑（牌型判定、比大小、提示搜索），服务器和浏览器共用同一份，保证前后端判定完全一致。

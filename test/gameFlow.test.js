@@ -243,6 +243,53 @@ async function playOneGame(ps, byId, label) {
             assert.strictEqual(gameOver.result.order[0], gameOver.result.winnerName);
         });
 
+        console.log('\n安全性：伪造的牌 / 畸形 Host 头');
+        {
+            const { GameRoom } = require('../server.js');
+            const cc = (x) => { const a = Array.from(x); return { suit: a[0], rank: a.slice(1).join('') }; };
+            const hh = (...x) => x.map(cc);
+            const fake = (n) => ({ name: n, ws: { readyState: 3 }, send() {}, cards: [], playerId: null, finished: false });
+            const room = new GameRoom('SEC');
+            const A = fake('A'), B = fake('B'), C = fake('C');
+            [A, B, C].forEach(x => room.addPlayer(x));
+            room.startGame(); room.level = '2';
+            A.cards = hh('♠3', '♠3'); B.cards = hh('♣A'); C.cards = hh('♥K');
+            room.currentIndex = 0; room.lastCombo = null; room.passCount = 0;
+
+            check('拆错花色的伪造牌被拒（否则点数算成 undefined，谁也压不过）', () => {
+                const r = room.playCards(A.playerId, [{ suit: '', rank: '♠3' }, { suit: '', rank: '♠3' }]);
+                assert.ok(r.error, '伪造牌被接受了');
+                assert.strictEqual(A.cards.length, 2, '手牌不该被扣掉');
+            });
+            check('伪造花色/点数被拒', () => {
+                assert.ok(room.playCards(A.playerId, [{ suit: '♠1', rank: '0' }]).error);
+                assert.ok(room.playCards(A.playerId, [{ suit: '♠', rank: '大王' }]).error);
+            });
+            check('真牌不受影响', () =>
+                assert.ok(!room.playCards(A.playerId, hh('♠3', '♠3')).error));
+        }
+
+        // 畸形 Host 头以前能让整个服务进程退出
+        {
+            const net = require('net');
+            const badHosts = ['[', 'a]b', '%', '@', 'a@b'];
+            for (const host of badHosts) {
+                await new Promise(res => {
+                    const sock = net.connect(PORT, 'localhost', () => {
+                        sock.write(`GET / HTTP/1.1\r\nHost: ${host}\r\n\r\n`);
+                    });
+                    sock.on('data', () => {}); sock.on('error', () => res()); sock.on('close', () => res());
+                    setTimeout(() => { sock.destroy(); res(); }, 250);
+                });
+            }
+            await sleep(300);
+            reset(p1);
+            send(p1, 'get_rooms');
+            const stillAlive = await waitFor(p1, 'room_list', 2000).catch(() => null);
+            check('畸形 Host 头不会把服务器搞挂', () =>
+                assert.ok(stillAlive, '服务器没响应，可能已经崩溃'));
+        }
+
         console.log('\n接风（头游走后下家直接领出）');
         {
             const { GameRoom } = require('../server.js');

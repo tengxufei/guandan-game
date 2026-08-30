@@ -45,6 +45,19 @@ function shuffle(array) {
     return array;
 }
 
+const ALL_RANKS = RANK_ORDER.concat(['2', '小王', '大王']);
+const SUIT_SET = new Set(SUITS);
+
+// 出牌数据是客户端发来的，必须确认花色和点数真的存在。
+// 否则可以把 {suit:'', rank:'♠3'} 这种拼出来的"牌"混进去：
+// cardKey 拼回来正好等于真牌，能通过手牌核销，但点数算出来是 undefined，
+// 结果谁也压不过它。
+function isValidCard(card) {
+    if (!card || typeof card.suit !== 'string' || typeof card.rank !== 'string') return false;
+    if (card.rank === '小王' || card.rank === '大王') return card.suit === '🃏';
+    return SUIT_SET.has(card.suit) && ALL_RANKS.includes(card.rank) && card.rank !== '小王' && card.rank !== '大王';
+}
+
 function isWildCard(card, level) {
     return card.suit === '♥' && card.rank === level;
 }
@@ -133,6 +146,9 @@ function detectTripleAttached(cards, level, attachLen) {
             const used = rk === R ? usedNatural : 0;
             for (let i = 0; i < cnt - used; i++) leftover.push(rk);
         }
+
+        // 带的牌如果和三张同点数，那实际上是四张/五张，应该按炸弹算，不是三带
+        if (leftover.some(rk => rk === R)) continue;
 
         if (attachLen === 1) {
             if (leftover.length + remainingWild !== 1) continue;
@@ -401,7 +417,7 @@ function suggestPlay(cards, level, last, decks = 2) {
     const bombCandidates = [];
     for (const g of groups.values()) {
         for (let useWild = 0; useWild <= wilds.length; useWild++) {
-            const size = Math.min(g.length, 8 - useWild) + useWild;
+            const size = g.length + useWild; // 炸弹不再限8张，这里以前卡着上限，9张以上的炸弹永远提示不出来
             if (size < 4) continue;
             bombCandidates.push([...g.slice(0, size - useWild), ...wilds.slice(0, useWild)]);
         }
@@ -423,12 +439,18 @@ function suggestPlay(cards, level, last, decks = 2) {
 
 const SHAPE_NAMES = {
     single: '单张', pair: '对子', triple: '三张', triple_single: '三带一', triple_pair: '三带二',
-    straight: '顺子', pair_straight: '连对', bomb: '炸弹', straight_flush: '同花顺', joker_bomb: '四王炸',
+    straight: '顺子', pair_straight: '连对', bomb: '炸弹', straight_flush: '同花顺', joker_bomb: '王炸',
 };
+
+// 王炸的叫法跟副数走
+function shapeLabel(shapeType, decks = 2) {
+    if (shapeType === 'joker_bomb') return `${['', '双', '四', '六'][decks] || ''}王炸`;
+    return SHAPE_NAMES[shapeType] || shapeType;
+}
 
 const CardLogic = {
     SUITS, RANK_ORDER, LEVEL_ORDER, PLAIN_RANK_VALUE, TIER, SHAPE_NAMES,
-    createDeck, shuffle, isWildCard, singleCardRank, levelAwareRank,
+    createDeck, shuffle, isWildCard, isValidCard, shapeLabel, singleCardRank, levelAwareRank,
     detectCombo, detectCombos, findBeatingCombo, suggestPlay, canBeat,
 };
 

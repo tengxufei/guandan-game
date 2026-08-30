@@ -6,7 +6,7 @@ const os = require('os');
 
 const {
     LEVEL_ORDER, SHAPE_NAMES,
-    createDeck, shuffle, isWildCard, singleCardRank,
+    createDeck, shuffle, isWildCard, isValidCard, shapeLabel, singleCardRank,
     detectCombo, findBeatingCombo,
 } = require('./cardLogic');
 
@@ -104,8 +104,14 @@ class GameRoom {
             hostId: this.hostId,
             currentPlayerId: this.status === 'playing' && this.currentPlayer() ? this.currentPlayer().playerId : null,
             lastPlayerId: this.lastPlayerId,
+            // 万能牌让一手牌有多种读法，服务器用的是哪一种必须原样告诉前端，
+            // 否则前端自己再推一遍可能推出不同的牌型，导致"显示能出但被服务器拒绝"
             lastCombo: this.lastCombo ? {
-                shapeName: SHAPE_NAMES[this.lastCombo.shapeType] || this.lastCombo.shapeType,
+                shapeName: shapeLabel(this.lastCombo.shapeType, this.decks),
+                shapeType: this.lastCombo.shapeType,
+                rank: this.lastCombo.rank,
+                tier: this.lastCombo.tier,
+                length: this.lastCombo.length,
                 cards: this.lastCombo.cards,
                 playerId: this.lastPlayerId,
             } : null,
@@ -155,9 +161,7 @@ class GameRoom {
         }
         const normalized = [];
         for (const card of requestedCards) {
-            if (!card || typeof card.suit !== 'string' || typeof card.rank !== 'string') {
-                return { error: '出牌数据有误' };
-            }
+            if (!isValidCard(card)) return { error: '出牌数据有误' };
             const key = cardKey(card);
             const available = handPool.get(key) || 0;
             if (available <= 0) return { error: '你手里没有这些牌' };
@@ -336,8 +340,11 @@ const STATIC_FILES = {
 };
 
 function serveStatic(req, res) {
-    const url = new URL(req.url, `http://${req.headers.host}`);
-    const entry = STATIC_FILES[url.pathname];
+    // 不能用 new URL(req.url, `http://${req.headers.host}`)：
+    // 随便发个 "Host: [" 就会抛 ERR_INVALID_URL，把整个服务进程弄挂。
+    // 这里只需要路径，自己截即可。
+    const pathname = req.url.split('?')[0].split('#')[0];
+    const entry = STATIC_FILES[pathname];
 
     if (!entry) {
         res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
@@ -360,8 +367,11 @@ const server = http.createServer(serveStatic);
 const wss = new WebSocket.Server({ server });
 
 wss.on('connection', (ws, req) => {
-    const url = new URL(req.url, `http://${req.headers.host}`);
-    const rawName = (url.searchParams.get('name') || '').trim();
+    // 同样不依赖 Host 头，用固定 base 解析（req.url 只是路径+查询串）
+    let rawName = '';
+    try {
+        rawName = (new URL(req.url, 'http://localhost').searchParams.get('name') || '').trim();
+    } catch (e) { /* 地址解析不了就用默认名，不该让连接失败 */ }
     const playerName = rawName.slice(0, 12) || '玩家';
 
     const player = new Player(ws, playerName);
@@ -581,7 +591,7 @@ function handlePlayCards(player, cards) {
         playerId: player.playerId,
         playerName: player.name,
         cards: result.cards,
-        shapeName: SHAPE_NAMES[result.combo.shapeType] || result.combo.shapeType,
+        shapeName: shapeLabel(result.combo.shapeType, room.decks),
         isBomb: result.combo.tier > 0, // 炸弹/同花顺/王炸，前端放音效+震屏
     });
 

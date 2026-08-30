@@ -118,6 +118,9 @@ function connect() {
     ws.onmessage = (e) => handle(JSON.parse(e.data));
     ws.onerror = () => toast('连接失败，确认和主机在同一个WiFi下');
     ws.onclose = () => {
+        stopTitleFlash(); // 否则断线后标题会一直闪下去
+        document.body.classList.remove('my-turn-now');
+        wasMyTurn = false;
         toast('与服务器断开了连接');
         $('status-text').textContent = '连接已断开，请刷新页面';
     };
@@ -210,7 +213,14 @@ function handle(msg) {
             break;
         case 'game_aborted':
             toast(msg.message);
+            // 手牌也要清掉，否则牌数显示0、底下却还铺着36张，
+            // 而且会让下一局的发牌动画判断失效
+            myCards = [];
+            selected.clear();
+            renderMyCards();
+            passedThisRound.clear();
             $('played-cards').innerHTML = '';
+            $('table-label').textContent = '';
             break;
         case 'game_over':
             showResult(msg.result);
@@ -242,9 +252,18 @@ function renderRoomList(rooms) {
     rooms.forEach(r => {
         const li = document.createElement('li');
         const status = r.status === 'playing' ? '游戏中' : `${r.playerCount}/3 · ${r.decks || 2}副`;
-        li.innerHTML = `<span class="room-code">${r.roomId}</span>
-            <span class="room-names">${r.names.join('、') || '空房间'}</span>
-            <span class="room-status">${status}</span>`;
+        // 玩家名是别人自己填的，只能用 textContent 塞进去。
+        // 之前用 innerHTML 拼，三个人的名字接起来就能凑出一段可执行的 HTML。
+        const codeEl = document.createElement('span');
+        codeEl.className = 'room-code';
+        codeEl.textContent = r.roomId;
+        const namesEl = document.createElement('span');
+        namesEl.className = 'room-names';
+        namesEl.textContent = r.names.join('、') || '空房间';
+        const statusEl = document.createElement('span');
+        statusEl.className = 'room-status';
+        statusEl.textContent = status;
+        li.append(codeEl, namesEl, statusEl);
         li.addEventListener('click', () => {
             $('room-id-input').value = r.roomId;
             if (r.status !== 'playing' && r.playerCount < 3) send('join_room', { roomId: r.roomId });
@@ -354,8 +373,12 @@ function updateStatusBar() {
         return;
     }
     // 新一轮开始时清空牌桌，免得旧牌一直摆在那儿让人以为还要压
-    if (!roomState.lastCombo && $('played-cards').childElementCount > 0) {
-        $('played-cards').innerHTML = '<span class="table-empty">新一轮，随意出牌</span>';
+    // 牌桌上还摆着上一轮的牌就换成提示语；但如果已经是提示语了就别再覆盖，
+    // 否则紧随其后的 room_state 会把"接风"字样冲掉
+    const table = $('played-cards');
+    if (!roomState.lastCombo && table.childElementCount > 0
+        && !table.querySelector('.table-empty')) {
+        table.innerHTML = '<span class="table-empty">新一轮，随意出牌</span>';
         $('table-label').textContent = '';
     }
 
@@ -412,9 +435,16 @@ function show(el, visible) {
     el.classList.toggle('hidden', !visible);
 }
 
+// 直接用服务器实际采用的那种读法。
+// 万能牌让一手牌可能有多种读法（比如6张既能读成顺子又能读成连对），
+// 前端自己再推一遍可能推出另一种，就会出现"界面说能出、服务器却拒绝"。
 function lastComboForCompare() {
     if (!roomState || !roomState.lastCombo) return null;
-    return detectCombo(roomState.lastCombo.cards, roomState.level, currentDecks());
+    const lc = roomState.lastCombo;
+    if (lc.shapeType && typeof lc.rank === 'number') {
+        return { shapeType: lc.shapeType, rank: lc.rank, tier: lc.tier, length: lc.length };
+    }
+    return detectCombo(lc.cards, roomState.level, currentDecks()); // 兼容旧服务端
 }
 
 function selectedCards() {
@@ -592,7 +622,12 @@ function showResult(result) {
     const places = ['头游', '二游', '末游'];
     result.order.forEach((name, i) => {
         const li = document.createElement('li');
-        li.innerHTML = `<span class="place">${places[i] || ''}</span><span>${name}</span>`;
+        const placeEl = document.createElement('span');
+        placeEl.className = 'place';
+        placeEl.textContent = places[i] || '';
+        const nameEl = document.createElement('span');
+        nameEl.textContent = name; // 同样不能用 innerHTML
+        li.append(placeEl, nameEl);
         ol.appendChild(li);
     });
     $('result-level').textContent = result.matchOver
