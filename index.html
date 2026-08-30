@@ -38,16 +38,20 @@
     </section>
 
     <section id="game-screen" class="screen hidden">
+        <div id="turn-glow" class="turn-glow"></div>
         <header class="game-header">
             <div class="header-left">
                 <span class="room-tag">房间 <b id="room-code"></b></span>
                 <span class="level-tag">打 <b id="level-badge">2</b></span>
-                <span class="deck-tag"><b id="deck-badge">2</b>副牌</span>
+                <span class="deck-tag"><b id="deck-badge">2</b>副</span>
             </div>
-            <button id="leave-room-btn" class="btn btn-ghost btn-sm">退出</button>
+            <div class="header-right">
+                <button id="mute-btn" class="icon-btn" title="音效开关">🔊</button>
+                <button id="leave-room-btn" class="btn btn-ghost btn-sm">退出</button>
+            </div>
         </header>
 
-        <div id="status-bar" class="status-bar">等待玩家加入…</div>
+        <div id="status-bar" class="status-bar"><span id="status-text">等待玩家加入…</span></div>
 
         <div id="deck-picker" class="deck-picker hidden">
             <span class="deck-label">用几副牌</span>
@@ -109,6 +113,7 @@
 
 </div>
 <script src="cardLogic.js"></script>
+<script src="sfx.js"></script>
 <script src="game.js"></script>
 </body>
 </html>

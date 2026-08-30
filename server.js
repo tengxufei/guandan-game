@@ -332,6 +332,7 @@ const STATIC_FILES = {
     '/style.css': { file: 'style.css', type: 'text/css; charset=utf-8' },
     '/game.js': { file: 'game.js', type: 'text/javascript; charset=utf-8' },
     '/cardLogic.js': { file: 'cardLogic.js', type: 'text/javascript; charset=utf-8' },
+    '/sfx.js': { file: 'sfx.js', type: 'text/javascript; charset=utf-8' },
 };
 
 function serveStatic(req, res) {
@@ -581,6 +582,7 @@ function handlePlayCards(player, cards) {
         playerName: player.name,
         cards: result.cards,
         shapeName: SHAPE_NAMES[result.combo.shapeType] || result.combo.shapeType,
+        isBomb: result.combo.tier > 0, // 炸弹/同花顺/王炸，前端放音效+震屏
     });
 
     if (result.justFinished) {

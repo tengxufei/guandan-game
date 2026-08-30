@@ -15,6 +15,9 @@ let selected = new Set(); // 选中的手牌下标
 let toastTimer = null;
 let passedThisRound = new Set(); // 本轮已经"不要"的玩家，用于在对手面板上标出来
 let sortMode = 'rank'; // rank = 按大小; group = 把对子/三张聚在一起
+let wasMyTurn = false;   // 上一次渲染时是不是轮到我，用来只在"刚轮到"的瞬间提醒
+let titleTimer = null;
+const BASE_TITLE = document.title;
 
 const $ = (id) => document.getElementById(id);
 
@@ -54,7 +57,48 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     window.addEventListener('resize', () => renderMyCards());
     $('result-close').addEventListener('click', () => $('result-modal').classList.add('hidden'));
+
+    $('mute-btn').addEventListener('click', () => {
+        const muted = Sfx.toggleMute();
+        $('mute-btn').textContent = muted ? '🔇' : '🔊';
+    });
+    $('mute-btn').textContent = Sfx.isMuted() ? '🔇' : '🔊';
+
+    // 浏览器要求用户先操作过才能播声音，这里在第一次点击时解锁
+    document.addEventListener('pointerdown', () => Sfx.unlock(), { once: true });
+
+    // 切回页面时把标题上的提醒清掉
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) stopTitleFlash();
+    });
 });
+
+// 页面在后台时，用标题栏闪烁提醒（手机锁屏/切到别的App也能看到）
+function startTitleFlash() {
+    stopTitleFlash();
+    let on = false;
+    titleTimer = setInterval(() => {
+        document.title = on ? BASE_TITLE : '🔔 轮到你出牌了！';
+        on = !on;
+    }, 900);
+}
+function stopTitleFlash() {
+    if (titleTimer) { clearInterval(titleTimer); titleTimer = null; }
+    document.title = BASE_TITLE;
+}
+
+// 轮到你了：声音 + 震动 + 整屏光晕 + 后台标题闪烁，四重提醒
+function alertMyTurn() {
+    Sfx.play('turn');
+    if (navigator.vibrate) {
+        try { navigator.vibrate([90, 60, 90]); } catch (e) {}
+    }
+    const glow = $('turn-glow');
+    glow.classList.remove('flash');
+    void glow.offsetWidth; // 强制重排，让动画能重复触发
+    glow.classList.add('flash');
+    if (document.hidden) startTitleFlash();
+}
 
 function doLogin() {
     const name = $('player-name').value.trim();
@@ -75,7 +119,7 @@ function connect() {
     ws.onerror = () => toast('连接失败，确认和主机在同一个WiFi下');
     ws.onclose = () => {
         toast('与服务器断开了连接');
-        $('status-bar').textContent = '连接已断开，请刷新页面';
+        $('status-text').textContent = '连接已断开，请刷新页面';
     };
 }
 
@@ -115,13 +159,17 @@ function handle(msg) {
             roomState = msg.state;
             render();
             break;
-        case 'your_cards':
+        case 'your_cards': {
+            const isNewDeal = myCards.length === 0 && msg.cards.length > 0;
             myCards = msg.cards;
             selected.clear();
             applySort();
+            if (isNewDeal) animateDeal();
             updateButtons();
             break;
+        }
         case 'game_started':
+            Sfx.play('deal');
             passedThisRound.clear();
             $('played-cards').innerHTML = '';
             $('table-label').textContent = '';
@@ -132,13 +180,25 @@ function handle(msg) {
         case 'played':
             passedThisRound.clear(); // 有人出牌就是新一圈，清掉"不要"标记
             renderPlayed(msg);
+            if (msg.isBomb) {
+                Sfx.play('bomb');
+                document.body.classList.remove('shake');
+                void document.body.offsetWidth;
+                document.body.classList.add('shake');
+                setTimeout(() => document.body.classList.remove('shake'), 600);
+            } else {
+                Sfx.play('play');
+            }
             break;
         case 'passed':
+            Sfx.play('pass');
             passedThisRound.add(msg.playerId);
             if (msg.playerId !== myId) toast(`${msg.playerName} 不要`);
             render();
             break;
         case 'notice':
+            if (msg.message.includes('加入了房间')) Sfx.play('join');
+            if (msg.message.includes('出完了牌')) Sfx.play('finish');
             toast(msg.message);
             break;
         case 'jiefeng':
@@ -156,6 +216,7 @@ function handle(msg) {
             showResult(msg.result);
             break;
         case 'error':
+            Sfx.play('error');
             toast(msg.message);
             break;
     }
@@ -269,21 +330,27 @@ function render() {
 
     updateStatusBar();
     updateButtons();
+
+    // 只在"从别人的回合变成我的回合"这一刻提醒，避免每次收状态都响
+    const myTurn = roomState.status === 'playing' && roomState.currentPlayerId === myId;
+    document.body.classList.toggle('my-turn-now', myTurn);
+    if (myTurn && !wasMyTurn) alertMyTurn();
+    if (!myTurn) stopTitleFlash();
+    wasMyTurn = myTurn;
 }
 
 function updateStatusBar() {
     const bar = $('status-bar');
+    const setBar = (text, cls) => { $('status-text').textContent = text; bar.className = cls; };
     if (roomState.status === 'waiting') {
         const n = roomState.players.length;
-        bar.textContent = n < 3
+        setBar(n < 3
             ? `等待玩家加入… (${n}/3)　房间号 ${roomState.roomId}`
-            : (myId === roomState.hostId ? '人齐了，点「开始游戏」' : '人齐了，等房主开始');
-        bar.className = 'status-bar';
+            : (myId === roomState.hostId ? '人齐了，点「开始游戏」' : '人齐了，等房主开始'), 'status-bar');
         return;
     }
     if (roomState.status === 'finished') {
-        bar.textContent = '本局结束';
-        bar.className = 'status-bar';
+        setBar('本局结束', 'status-bar');
         return;
     }
     // 新一轮开始时清空牌桌，免得旧牌一直摆在那儿让人以为还要压
@@ -294,11 +361,9 @@ function updateStatusBar() {
 
     const cur = roomState.players.find(p => p.playerId === roomState.currentPlayerId);
     if (roomState.currentPlayerId === myId) {
-        bar.textContent = roomState.lastCombo ? '轮到你了 — 出牌或不要' : '轮到你了 — 本轮你先出';
-        bar.className = 'status-bar my-turn';
+        setBar(roomState.lastCombo ? '👉 轮到你了 — 出牌或不要' : '👉 轮到你了 — 本轮你先出', 'status-bar my-turn');
     } else {
-        bar.textContent = `等 ${cur ? cur.name : '…'} 出牌`;
-        bar.className = 'status-bar';
+        setBar(`等 ${cur ? cur.name : '…'} 出牌`, 'status-bar');
     }
 }
 
@@ -383,6 +448,19 @@ function applySort() {
 const MIN_STEP = 23;  // 每张至少露出这么宽，太窄手指点不准
 const GROUP_GAP = 9;  // 换点数时额外留的缝
 
+// 发牌时让手牌一张张滑进来
+function animateDeal() {
+    const wrap = $('my-cards');
+    wrap.classList.add('dealing');
+    wrap.querySelectorAll('.card').forEach((el, i) => {
+        el.style.animationDelay = `${Math.min(i * 14, 700)}ms`;
+    });
+    setTimeout(() => {
+        wrap.classList.remove('dealing');
+        wrap.querySelectorAll('.card').forEach(el => { el.style.animationDelay = ''; });
+    }, 1400);
+}
+
 function renderMyCards() {
     const wrap = $('my-cards');
     wrap.innerHTML = '';
@@ -456,6 +534,7 @@ function cardEl(card, index) {
     el.addEventListener('click', () => {
         if (selected.has(index)) selected.delete(index); else selected.add(index);
         el.classList.toggle('selected');
+        Sfx.play('tap');
         updateButtons();
     });
     return el;
@@ -464,10 +543,13 @@ function cardEl(card, index) {
 function renderPlayed(msg) {
     const wrap = $('played-cards');
     wrap.innerHTML = '';
-    msg.cards.forEach(card => {
+    msg.cards.forEach((card, i) => {
         const red = card.suit === '♥' || card.suit === '♦' || card.rank === '大王';
         const el = document.createElement('div');
         el.className = `card small ${red ? 'red' : 'black'}`;
+        // 错开出场，并给每张一点不同的旋转，看起来像甩出去的
+        el.style.animationDelay = `${i * 45}ms`;
+        el.style.setProperty('--spin', `${-10 + (i % 4) * 6}deg`);
         const level = roomState ? roomState.level : null;
         if (level && isWildCard(card, level)) el.classList.add('wild');
         const f = cardFace(card);
@@ -501,6 +583,9 @@ function doHint() {
 }
 
 function showResult(result) {
+    stopTitleFlash();
+    const iWon = result.order[0] === (roomState && roomState.players.find(p => p.playerId === myId) || {}).name;
+    Sfx.play(iWon ? 'win' : 'lose');
     $('result-title').textContent = result.matchOver ? '🎉 打到A，整场结束！' : '本局结束';
     const ol = $('result-order');
     ol.innerHTML = '';

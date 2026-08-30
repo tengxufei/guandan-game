@@ -15,11 +15,27 @@
 
 body {
     font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
-    background: linear-gradient(160deg, #1e3a2f 0%, #0f2419 100%);
+    /* 牌桌质感：中间亮一圈的绿呢 + 细斜纹 + 四周压暗 */
+    background:
+        repeating-linear-gradient(45deg, rgba(255,255,255,.012) 0 2px, transparent 2px 4px),
+        radial-gradient(ellipse 120% 80% at 50% 32%, #2c6b4a 0%, #1d4a33 45%, #123021 75%, #0b1f16 100%);
+    background-attachment: fixed;
     min-height: 100vh;
     color: var(--ink);
     -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
 }
+
+/* 炸弹时整个画面抖一下 */
+@keyframes shake {
+    0%,100% { transform: translate(0,0); }
+    15% { transform: translate(-7px, 3px) rotate(-.4deg); }
+    30% { transform: translate(6px, -4px) rotate(.4deg); }
+    45% { transform: translate(-5px, -2px); }
+    60% { transform: translate(4px, 3px); }
+    80% { transform: translate(-2px, 1px); }
+}
+body.shake { animation: shake .55s ease-out; }
 
 #app { max-width: 900px; margin: 0 auto; padding: 10px 10px 6px; }
 .hidden { display: none !important; }
@@ -68,10 +84,26 @@ input[type=text]:focus { border-color: var(--green); }
 .hint { text-align: center; color: var(--muted); font-size: .85rem; padding: 10px; }
 
 /* ---------- 游戏界面 ---------- */
-.game-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 7px; }
-.header-left { display: flex; gap: 10px; flex-wrap: wrap; }
-.room-tag, .level-tag, .deck-tag { color: rgba(255,255,255,.8); font-size: .82rem; }
-.room-tag b, .level-tag b, .deck-tag b { color: var(--gold); letter-spacing: 1px; }
+/* 游戏界面撑满一屏，牌桌占掉多余的高度，底部不再留一大片空白 */
+#game-screen { display: flex; flex-direction: column; min-height: calc(100vh - 16px); }
+#game-screen .table-area { flex: 1 1 auto; }
+
+.game-header { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 7px; }
+.header-left { display: flex; gap: 5px; flex-wrap: wrap; flex: 1; min-width: 0; }
+.header-right { display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
+.icon-btn {
+    background: rgba(255,255,255,.12); border: none; color: #fff;
+    width: 34px; height: 34px; border-radius: 50%; font-size: 16px;
+    cursor: pointer; line-height: 1; font-family: inherit;
+}
+.icon-btn:active { transform: scale(.92); }
+
+.room-tag, .level-tag, .deck-tag {
+    color: rgba(255,255,255,.75); font-size: .72rem;
+    background: rgba(0,0,0,.25); border: 1px solid rgba(255,255,255,.09);
+    padding: 4px 8px; border-radius: 20px; white-space: nowrap;
+}
+.room-tag b, .level-tag b, .deck-tag b { color: var(--gold); letter-spacing: .5px; font-size: .85rem; }
 
 /* 房主在开局前选用几副牌 */
 .deck-picker {
@@ -91,17 +123,54 @@ input[type=text]:focus { border-color: var(--green); }
 .deck-opt:disabled { opacity: .45; cursor: default; }
 
 .status-bar {
-    background: rgba(255,255,255,.12); color: #fff; text-align: center;
-    padding: 8px; border-radius: 10px; font-size: .9rem; margin-bottom: 8px;
+    background: rgba(0,0,0,.28); color: rgba(255,255,255,.9); text-align: center;
+    padding: 9px; border-radius: 11px; font-size: .9rem; margin-bottom: 8px;
+    border: 1px solid rgba(255,255,255,.08);
+    transition: background .25s, color .25s, box-shadow .25s;
 }
-.status-bar.my-turn { background: var(--gold); color: #3a2c00; font-weight: 700; }
+/* 轮到你了：金色横幅 + 呼吸光晕，一眼就能看见 */
+@keyframes turnPulse {
+    0%,100% { box-shadow: 0 0 0 0 rgba(232,185,35,.55), 0 2px 12px rgba(232,185,35,.35); }
+    50%     { box-shadow: 0 0 0 9px rgba(232,185,35,0), 0 2px 20px rgba(232,185,35,.55); }
+}
+.status-bar.my-turn {
+    background: linear-gradient(135deg, #f5cf45, #e0a911);
+    color: #3a2c00; font-weight: 800; font-size: .98rem;
+    border-color: rgba(255,255,255,.4);
+    animation: turnPulse 1.5s ease-in-out infinite;
+}
+
+/* 轮到你时，整屏边缘泛起一圈金光 */
+.turn-glow {
+    position: fixed; inset: 0; pointer-events: none; z-index: 40; opacity: 0;
+    box-shadow: inset 0 0 70px 12px rgba(232,185,35,.6);
+}
+@keyframes glowFlash {
+    0% { opacity: 0; } 25% { opacity: 1; } 100% { opacity: 0; }
+}
+.turn-glow.flash { animation: glowFlash 1.1s ease-out; }
+/* 轮到你时手牌区也亮起来 */
+body.my-turn-now .my-area {
+    box-shadow: 0 0 0 2px rgba(232,185,35,.5), 0 0 22px rgba(232,185,35,.22);
+}
 
 .opponents { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
 .opponent {
-    background: rgba(255,255,255,.1); border: 2px solid transparent;
-    border-radius: 12px; padding: 7px 8px; text-align: center; color: #fff;
+    background: linear-gradient(160deg, rgba(255,255,255,.13), rgba(255,255,255,.05));
+    border: 2px solid transparent; position: relative;
+    border-radius: 13px; padding: 7px 8px; text-align: center; color: #fff;
+    transition: border-color .25s, box-shadow .25s, transform .25s;
 }
-.opponent.active { border-color: var(--gold); background: rgba(232,185,35,.18); }
+/* 正在出牌的人：金边 + 缓慢呼吸 */
+@keyframes oppPulse {
+    0%,100% { box-shadow: 0 0 0 0 rgba(232,185,35,.4); }
+    50% { box-shadow: 0 0 0 7px rgba(232,185,35,0); }
+}
+.opponent.active {
+    border-color: var(--gold);
+    background: linear-gradient(160deg, rgba(232,185,35,.28), rgba(232,185,35,.1));
+    animation: oppPulse 1.6s ease-in-out infinite;
+}
 .opponent.done { opacity: .55; }
 .opp-name { font-size: .9rem; font-weight: 600; margin-bottom: 5px; }
 .opp-fan { display: flex; justify-content: center; height: 26px; align-items: center; margin-bottom: 2px; }
@@ -118,10 +187,16 @@ input[type=text]:focus { border-color: var(--green); }
 
 .table-area {
     position: relative;
-    background: var(--green-dark); border-radius: 14px; padding: 8px 10px;
+    /* 牌桌中间稍亮，像有盏灯照着 */
+    background:
+        radial-gradient(ellipse 90% 120% at 50% 40%, rgba(255,255,255,.07), transparent 70%),
+        linear-gradient(160deg, #1a5c3c, #0f3d28);
+    background-color: #14532b;
+    border-radius: 15px; padding: 8px 10px;
     min-height: 88px; display: flex; flex-direction: column;
     align-items: center; justify-content: center; gap: 4px; margin-bottom: 8px;
-    border: 2px solid rgba(255,255,255,.08);
+    border: 2px solid rgba(255,255,255,.1);
+    box-shadow: inset 0 2px 18px rgba(0,0,0,.35);
 }
 .table-label { color: rgba(255,255,255,.8); font-size: .84rem; min-height: 16px; font-weight: 600; }
 .played-cards { display: flex; flex-wrap: wrap; gap: 2px; justify-content: center; min-height: 60px; align-items: center; }
@@ -142,12 +217,14 @@ input[type=text]:focus { border-color: var(--green); }
 
 .card {
     position: relative;
-    width: 46px; height: 66px; background: #fff; border-radius: 6px;
+    width: 46px; height: 66px; border-radius: 6px;
+    background: linear-gradient(160deg, #fff 0%, #fff 55%, #f0f3f7 100%);
     cursor: pointer; user-select: none; flex-shrink: 0;
-    box-shadow: 0 1px 4px rgba(0,0,0,.35);
-    transition: transform .12s, box-shadow .12s;
-    border: 1.5px solid #cfd8e0;
+    box-shadow: 0 1px 4px rgba(0,0,0,.4), inset 0 1px 0 rgba(255,255,255,.9);
+    transition: transform .14s cubic-bezier(.2,.9,.3,1.4), box-shadow .14s;
+    border: 1.5px solid #c3ccd6;
 }
+.card:active { transform: translateY(-4px); }
 /* 左上角角标：牌叠起来时露出的就是这一条，所以必须靠左对齐 */
 .card .corner {
     position: absolute; top: 2px; left: 3px;
@@ -204,7 +281,7 @@ input[type=text]:focus { border-color: var(--green); }
 .action-bar .btn { min-width: 74px; padding: 11px 14px; }
 
 .toast {
-    position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+    position: absolute; left: 50%; bottom: 8px; transform: translateX(-50%);
     background: rgba(0,0,0,.86); color: #fff; padding: 9px 18px; border-radius: 20px;
     font-size: .86rem; z-index: 50; max-width: 90%; text-align: center;
     box-shadow: 0 4px 14px rgba(0,0,0,.45); pointer-events: none;
@@ -260,4 +337,51 @@ input[type=text]:focus { border-color: var(--green); }
     .card.small { width: 38px; height: 54px; }
     .action-bar .btn { padding: 9px 12px; font-size: 14px; }
     .game-header { margin-bottom: 5px; }
+}
+
+
+/* ---------- 动画 ---------- */
+
+/* 出的牌从下方飞到牌桌上，带一点旋转，像真的甩出去 */
+@keyframes flyToTable {
+    0%   { opacity: 0; transform: translateY(90px) scale(.75) rotate(var(--spin, -8deg)); }
+    60%  { opacity: 1; transform: translateY(-8px) scale(1.06) rotate(calc(var(--spin, -8deg) / 3)); }
+    100% { opacity: 1; transform: translateY(0) scale(1) rotate(0deg); }
+}
+.played-cards .card.small { animation: flyToTable .34s cubic-bezier(.2,.8,.3,1) backwards; }
+
+/* 发牌：手牌一张张滑进来 */
+@keyframes dealIn {
+    from { opacity: 0; transform: translateY(26px) scale(.9); }
+    to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+.my-cards.dealing .card { animation: dealIn .3s ease-out backwards; }
+
+/* 出完牌后手牌重排的淡入 */
+@keyframes fadeUp {
+    from { opacity: 0; transform: translateY(6px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+.table-label, .table-hint { animation: fadeUp .2s ease-out; }
+
+/* 结算弹窗弹入 */
+@keyframes popIn {
+    0% { opacity: 0; transform: scale(.85) translateY(14px); }
+    70% { transform: scale(1.03) translateY(0); }
+    100% { opacity: 1; transform: scale(1); }
+}
+.modal-box { animation: popIn .3s cubic-bezier(.2,.9,.3,1.3); }
+
+/* 提示条淡入 */
+@keyframes toastIn { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translateX(-50%); } }
+.toast:not(.hidden) { animation: toastIn .18s ease-out; }
+
+/* 出牌/不要按钮在轮到自己时更醒目 */
+body.my-turn-now #play-btn:not(:disabled) {
+    box-shadow: 0 0 0 2px rgba(255,255,255,.25), 0 4px 14px rgba(27,107,58,.6);
+}
+
+/* 关掉动画（系统设置里开了"减少动态效果"时尊重用户选择） */
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
 }
