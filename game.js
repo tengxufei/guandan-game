@@ -17,7 +17,27 @@ let passedThisRound = new Set(); // 本轮已经"不要"的玩家，用于在对
 let sortMode = 'rank'; // rank = 按大小; group = 把对子/三张聚在一起
 let wasMyTurn = false;   // 上一次渲染时是不是轮到我，用来只在"刚轮到"的瞬间提醒
 let titleTimer = null;
+let reconnectTimer = null;
+let reconnectTries = 0;
+let hasEnteredGame = false; // 登录过才需要自动重连（pageshow/focus 在首次加载时也会触发）
 const BASE_TITLE = document.title;
+
+// 身份令牌：手机切后台会断开连接，靠它让服务器认出"还是刚才那个人"，
+// 把座位和手牌还给你。页面刷新/被系统回收后也能凭它自动回到牌桌。
+function loadStored(key) {
+    try { return localStorage.getItem(key) || ''; } catch (e) { return ''; }
+}
+function saveStored(key, val) {
+    try { localStorage.setItem(key, val); } catch (e) {}
+}
+function myToken() {
+    let t = loadStored('guandan-token');
+    if (!t) {
+        t = (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2) + Date.now().toString(36));
+        saveStored('guandan-token', t);
+    }
+    return t;
+}
 
 const $ = (id) => document.getElementById(id);
 
@@ -67,10 +87,23 @@ document.addEventListener('DOMContentLoaded', () => {
     // 浏览器要求用户先操作过才能播声音，这里在第一次点击时解锁
     document.addEventListener('pointerdown', () => Sfx.unlock(), { once: true });
 
-    // 切回页面时把标题上的提醒清掉
+    // 手机切回来 / 网络恢复时立刻重连。
+    // 手机浏览器把页面切到后台就会断开 WebSocket，这是回来能接着玩的关键。
     document.addEventListener('visibilitychange', () => {
-        if (!document.hidden) stopTitleFlash();
+        if (!document.hidden) { stopTitleFlash(); reconnectNow(); }
     });
+    window.addEventListener('focus', reconnectNow);
+    window.addEventListener('online', reconnectNow);
+    window.addEventListener('pageshow', reconnectNow);
+
+    // 页面刷新或被系统回收后重新打开：凭令牌自动回到原来的牌桌
+    const savedName = loadStored('guandan-name');
+    if (savedName && loadStored('guandan-token')) {
+        myName = savedName;
+        $('player-name').value = savedName;
+        hasEnteredGame = true;
+        connect();
+    }
 });
 
 // 页面在后台时，用标题栏闪烁提醒（手机锁屏/切到别的App也能看到）
@@ -104,6 +137,7 @@ function doLogin() {
     const name = $('player-name').value.trim();
     if (!name) return toast('请先输入名字');
     myName = name;
+    hasEnteredGame = true;
     connect();
 }
 
@@ -114,16 +148,51 @@ function doJoin() {
 }
 
 function connect() {
-    ws = new WebSocket(`${wsUrl()}?name=${encodeURIComponent(myName)}`);
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+
+    ws = new WebSocket(`${wsUrl()}?name=${encodeURIComponent(myName)}&token=${encodeURIComponent(myToken())}`);
+
+    ws.onopen = () => {
+        reconnectTries = 0;
+        setConnBanner(false);
+    };
     ws.onmessage = (e) => handle(JSON.parse(e.data));
-    ws.onerror = () => toast('连接失败，确认和主机在同一个WiFi下');
+    ws.onerror = () => { /* onclose 里统一处理重连 */ };
     ws.onclose = () => {
         stopTitleFlash(); // 否则断线后标题会一直闪下去
         document.body.classList.remove('my-turn-now');
         wasMyTurn = false;
-        toast('与服务器断开了连接');
-        $('status-text').textContent = '连接已断开，请刷新页面';
+        setConnBanner(true);
+        scheduleReconnect();
     };
+}
+
+// 断了就自动重连，间隔逐渐拉长但最多5秒，一直试到连上为止
+function scheduleReconnect() {
+    if (!hasEnteredGame || reconnectTimer) return;
+    const delay = Math.min(1000 * Math.pow(1.6, reconnectTries), 5000);
+    reconnectTries++;
+    reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        connect();
+    }, delay);
+}
+
+// 从后台切回来、或网络恢复时立刻重连，不用等退避计时
+function reconnectNow() {
+    if (!hasEnteredGame) return; // 还没登录就别连，否则首次加载会直接跳过登录页
+    if (ws && ws.readyState === WebSocket.OPEN) return;
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+    reconnectTries = 0;
+    connect();
+}
+
+function setConnBanner(show) {
+    const el = $('conn-banner');
+    if (el) el.classList.toggle('hidden', !show);
 }
 
 function send(type, payload = {}) {
@@ -135,9 +204,15 @@ function handle(msg) {
     switch (msg.type) {
         case 'login_success':
             myName = msg.playerName;
+            if (msg.token) saveStored('guandan-token', msg.token);
+            saveStored('guandan-name', myName);
             $('lobby-player-name').textContent = myName;
-            showScreen('lobby-screen');
-            send('get_rooms');
+            // 服务器说你还在房间里（断线重连/刷新回来），就直接等它把房间信息发过来，
+            // 不要先闪一下大厅
+            if (!msg.inRoom) {
+                showScreen('lobby-screen');
+                send('get_rooms');
+            }
             break;
         case 'room_list':
             renderRoomList(msg.rooms);
@@ -154,6 +229,7 @@ function handle(msg) {
             roomState = null;
             myCards = [];
             selected.clear();
+            renderMyCards();
             showScreen('lobby-screen');
             send('get_rooms');
             break;
@@ -163,7 +239,7 @@ function handle(msg) {
             render();
             break;
         case 'your_cards': {
-            const isNewDeal = myCards.length === 0 && msg.cards.length > 0;
+            const isNewDeal = !msg.resumed && myCards.length === 0 && msg.cards.length > 0;
             myCards = msg.cards;
             selected.clear();
             applySort();
@@ -333,9 +409,14 @@ function render() {
             }
         }
 
+        el.classList.toggle('offline', p.connected === false);
+
         const place = roomState.finishOrder.indexOf(p.playerId);
         const tag = el.querySelector('.opp-tag');
-        if (place >= 0) {
+        if (p.connected === false) {
+            tag.textContent = '掉线中…';
+            tag.className = 'opp-tag offline';
+        } else if (place >= 0) {
             tag.textContent = ['头游', '二游', '末游'][place];
             tag.className = 'opp-tag rank';
         } else if (passedThisRound.has(p.playerId)) {
@@ -383,6 +464,11 @@ function updateStatusBar() {
     }
 
     const cur = roomState.players.find(p => p.playerId === roomState.currentPlayerId);
+    const offline = roomState.players.filter(p => p.connected === false);
+    if (offline.length && roomState.currentPlayerId !== myId) {
+        setBar(`${offline.map(p => p.name).join('、')} 掉线了，等他重连…`, 'status-bar waiting');
+        return;
+    }
     if (roomState.currentPlayerId === myId) {
         setBar(roomState.lastCombo ? '👉 轮到你了 — 出牌或不要' : '👉 轮到你了 — 本轮你先出', 'status-bar my-turn');
     } else {

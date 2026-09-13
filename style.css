@@ -140,6 +140,28 @@ input[type=text]:focus { border-color: var(--green); }
     animation: turnPulse 1.5s ease-in-out infinite;
 }
 
+/* 断线重连提示条 */
+.conn-banner {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 60;
+    background: #b5442f; color: #fff; text-align: center;
+    padding: 7px; font-size: .84rem; font-weight: 600;
+    box-shadow: 0 2px 10px rgba(0,0,0,.4);
+}
+@keyframes connBlink { 0%,100%{opacity:.35} 50%{opacity:1} }
+.conn-dot {
+    display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+    background: #fff; margin-right: 7px; vertical-align: middle;
+    animation: connBlink 1s ease-in-out infinite;
+}
+
+/* 掉线的玩家 */
+.opponent.offline { opacity: .5; border-color: rgba(255,255,255,.25); animation: none; }
+.opp-tag.offline {
+    color: #ffcdc3; background: rgba(181,68,47,.45);
+    border-radius: 9px; display: inline-block; padding: 1px 9px;
+}
+.status-bar.waiting { background: rgba(181,68,47,.35); color: #ffd9d1; }
+
 /* 轮到你时，整屏边缘泛起一圈金光 */
 .turn-glow {
     position: fixed; inset: 0; pointer-events: none; z-index: 40; opacity: 0;

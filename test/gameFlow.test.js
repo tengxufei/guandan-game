@@ -12,10 +12,12 @@ function check(name, fn) {
     catch (e) { failed++; console.log(`  ✗ ${name}\n      ${e.message}`); }
 }
 
-function connect(name) {
+let tokenSeq = 0;
+function connect(name, token) {
+    const tok = token || `test-token-${++tokenSeq}`;
     return new Promise((resolve) => {
-        const ws = new WebSocket(`ws://localhost:${PORT}?name=${encodeURIComponent(name)}`);
-        const st = { ws, name, cards: [], id: null, state: null, queue: [], waiters: [] };
+        const ws = new WebSocket(`ws://localhost:${PORT}?name=${encodeURIComponent(name)}&token=${tok}`);
+        const st = { ws, name, token: tok, cards: [], id: null, state: null, queue: [], waiters: [] };
         ws.on('message', (raw) => {
             const msg = JSON.parse(raw);
             if (msg.type === 'joined_room') st.id = msg.playerId;
@@ -346,16 +348,52 @@ async function playOneGame(ps, byId, label) {
             assert.strictEqual(handBefore, handAfter, '手牌被重新发了');
         });
 
-        console.log('\n断线处理');
+        console.log('\n掉线与重连');
+        // 上一段已经开好了一局，直接在"对局进行中"制造掉线
+        await sleep(200);
+        check('前置条件：对局正在进行', () =>
+            assert.strictEqual(p1.state.status, 'playing'));
+
+        const seat3 = p3.id;
+        const hand3 = p3.cards.map(c => `${c.suit}${c.rank}`).sort().join(',');
         ps.forEach(reset);
-        p3.ws.close();
-        await sleep(300);
-        check('有人离开后房间状态回到等待', () => {
+        p3.ws.close();           // 模拟手机切到后台，连接被掐断
+        await sleep(500);
+
+        check('有人掉线不会让整局作废（座位和手牌都留着）', () => {
             const st = p1.state;
-            assert.notStrictEqual(st.status, 'playing');
-            assert.strictEqual(st.players.length, 2);
+            assert.strictEqual(st.status, 'playing', '对局被中止了');
+            assert.strictEqual(st.players.length, 3, '座位被清掉了');
+        });
+        check('其他人能看到他处于掉线状态', () => {
+            const gone = p1.state.players.find(x => x.playerId === seat3);
+            assert.ok(gone && gone.connected === false, '没有标记为掉线');
+            assert.ok(gone.cardCount > 0, '手牌被清掉了');
         });
 
+        // 用同一个令牌重连（前端靠 localStorage 里的令牌做到这一点）
+        const p3b = await connect('孩子', p3.token);
+        await waitFor(p3b, 'your_cards', 3000);
+        await sleep(300);
+        check('重连后回到原座位，手牌一张不差', () => {
+            assert.strictEqual(p3b.id, seat3, '座位变了');
+            assert.strictEqual(p3b.cards.map(c => `${c.suit}${c.rank}`).sort().join(','), hand3, '手牌对不上');
+        });
+        check('重连后对局继续（没有被中止）', () =>
+            assert.strictEqual(p3b.state.status, 'playing'));
+        check('重连后重新标记为在线', () => {
+            const back = p3b.state.players.find(x => x.playerId === seat3);
+            assert.ok(back && back.connected === true);
+        });
+
+        // 主动点"退出"则立刻离开，不等重连
+        reset(p1);
+        send(p3b, 'leave_room');
+        await sleep(400);
+        check('主动退出会立刻离开房间（不占着座位）', () =>
+            assert.strictEqual(p1.state.players.length, 2, `实际还有${p1.state.players.length}人`));
+
+        p3b.ws.close();
         p1.ws.close();
         p2.ws.close();
     } catch (e) {

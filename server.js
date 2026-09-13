@@ -11,6 +11,13 @@ const {
 } = require('./cardLogic');
 
 const PLAYERS_PER_ROOM = 3;
+// 手机浏览器切到后台就会掐断 WebSocket，回来必须能续上，
+// 所以掉线后座位和手牌先留着，给一段重连宽限期
+const RECONNECT_GRACE_MS = 3 * 60 * 1000;
+// 心跳：手机休眠或WiFi断掉时，连接是"悄悄死掉"的——不会发关闭帧，
+// 光靠 TCP 超时可能几分钟才发现，其他人就一直干等。
+// 定期 ping，没回应就判定掉线。
+const HEARTBEAT_MS = Number(process.env.HEARTBEAT_MS) || 15000;
 const ALLOWED_DECKS = [1, 2, 3];
 const DEFAULT_DECKS = 2; // 掼蛋标准就是两副牌：108张，3人正好每人36张
 
@@ -121,6 +128,7 @@ class GameRoom {
                 name: p.name,
                 cardCount: p.cards.length,
                 finished: p.finished,
+                connected: p.connected,
                 isHost: p.playerId === this.hostId,
             })),
         };
@@ -310,9 +318,12 @@ function sortHand(cards, level) {
 }
 
 class Player {
-    constructor(ws, name) {
+    constructor(ws, name, token) {
         this.ws = ws;
         this.name = name;
+        this.token = token;      // 用来在重连时认出是同一个人
+        this.connected = true;
+        this.disconnectTimer = null;
         this.playerId = null;
         this.roomId = null;
         this.cards = [];
@@ -327,7 +338,19 @@ class Player {
 }
 
 const rooms = new Map();
-const players = new Map();
+const players = new Map();        // ws -> player
+const playersByToken = new Map(); // token -> player，重连时靠它认人
+
+function clearDisconnectTimer(player) {
+    if (player.disconnectTimer) {
+        clearTimeout(player.disconnectTimer);
+        player.disconnectTimer = null;
+    }
+}
+
+function randomToken() {
+    return Math.random().toString(36).slice(2) + Date.now().toString(36);
+}
 
 // 只开放前端这几个文件，避免把 server.js、package.json 之类也发出去
 const STATIC_FILES = {
@@ -366,7 +389,26 @@ function serveStatic(req, res) {
 const server = http.createServer(serveStatic);
 const wss = new WebSocket.Server({ server });
 
+// 浏览器会在协议层自动回 pong，不需要前端配合
+const heartbeat = setInterval(() => {
+    wss.clients.forEach(ws => {
+        if (ws.isAlive === false) {
+            ws.terminate(); // 上一轮没回应，当它已经断了
+            return;
+        }
+        ws.isAlive = false;
+        try { ws.ping(); } catch (e) { /* socket 已经坏了，下一轮会被清掉 */ }
+    });
+}, HEARTBEAT_MS);
+// unref：心跳不该单独把进程吊着。
+// 服务器监听时自然有句柄保活；而测试脚本 require 这个模块时，
+// 没有 unref 的话这个定时器会让脚本永远退不出来。
+heartbeat.unref();
+wss.on('close', () => clearInterval(heartbeat));
+
 wss.on('connection', (ws, req) => {
+    ws.isAlive = true;
+    ws.on('pong', () => { ws.isAlive = true; });
     // 同样不依赖 Host 头，用固定 base 解析（req.url 只是路径+查询串）
     let rawName = '';
     try {
@@ -374,12 +416,48 @@ wss.on('connection', (ws, req) => {
     } catch (e) { /* 地址解析不了就用默认名，不该让连接失败 */ }
     const playerName = rawName.slice(0, 12) || '玩家';
 
-    const player = new Player(ws, playerName);
+    const token = (() => {
+        try { return (new URL(req.url, 'http://localhost').searchParams.get('token') || '').slice(0, 64); }
+        catch (e) { return ''; }
+    })();
+
+    // 重连：如果这个令牌对应的玩家还在某个房间里，就把他接回原来的座位
+    const returning = token ? playersByToken.get(token) : null;
+    if (returning && returning.roomId && rooms.has(returning.roomId)) {
+        const room = rooms.get(returning.roomId);
+        if (returning.ws && returning.ws !== ws) {
+            players.delete(returning.ws);
+            try { returning.ws.close(); } catch (e) {}
+        }
+        returning.ws = ws;
+        returning.connected = true;
+        clearDisconnectTimer(returning);
+        if (rawName) returning.name = playerName;
+        players.set(ws, returning);
+        bindSocket(ws, returning);
+
+        console.log('玩家重连:', returning.name, '房间:', room.roomId);
+        returning.send({ type: 'login_success', playerName: returning.name, token: returning.token, inRoom: true });
+        returning.send({ type: 'joined_room', roomId: room.roomId, playerId: returning.playerId });
+        returning.send({ type: 'your_cards', cards: returning.cards, resumed: true });
+        broadcastToRoom(room, { type: 'notice', message: `${returning.name} 回来了` });
+        broadcastRoomState(room);
+        broadcastRoomList();
+        return;
+    }
+
+    const player = new Player(ws, playerName, token || randomToken());
     players.set(ws, player);
+    playersByToken.set(player.token, player);
     console.log('新玩家连接:', playerName, '在线人数:', players.size);
 
-    player.send({ type: 'login_success', playerName: player.name });
+    player.send({ type: 'login_success', playerName: player.name, token: player.token, inRoom: false });
+    bindSocket(ws, player);
 
+});
+
+// 消息处理挂在 socket 上；重连换了新 socket 后要重新挂一遍
+function bindSocket(ws, player) {
     ws.on('message', (message) => {
         let data;
         try {
@@ -396,9 +474,12 @@ wss.on('connection', (ws, req) => {
         }
     });
 
-    ws.on('close', () => handlePlayerDisconnect(player));
+    ws.on('close', () => {
+        // 只有当前这条连接断了才算掉线；重连换socket时旧的 close 要忽略
+        if (player.ws === ws) handlePlayerDisconnect(player);
+    });
     ws.on('error', (err) => console.error('WebSocket error:', err));
-});
+}
 
 function handleMessage(player, data) {
     switch (data.type) {
@@ -461,6 +542,7 @@ function handleJoinRoom(player, roomId) {
 }
 
 function handleLeaveRoom(player) {
+    clearDisconnectTimer(player); // 主动退出就不用再等重连了
     const room = player.roomId ? rooms.get(player.roomId) : null;
     detachFromRoom(player, room, '离开了房间');
     player.send({ type: 'left_room' });
@@ -656,11 +738,31 @@ function buildResultPayload(room) {
 }
 
 function handlePlayerDisconnect(player) {
-    console.log('玩家断开:', player.name);
+    console.log('玩家掉线:', player.name);
     players.delete(player.ws);
+    player.connected = false;
+
     const room = player.roomId ? rooms.get(player.roomId) : null;
-    detachFromRoom(player, room, '断开了连接');
+    if (!room) {
+        playersByToken.delete(player.token);
+        return;
+    }
+
+    // 不立刻把人踢出去：手机切后台/锁屏都会断开，座位和手牌先留着，
+    // 给一段宽限期让他重连回来。超时才真的当他离开。
+    broadcastToRoom(room, { type: 'notice', message: `${player.name} 掉线了，等待重连…` });
+    broadcastRoomState(room);
     broadcastRoomList();
+
+    clearDisconnectTimer(player);
+    player.disconnectTimer = setTimeout(() => {
+        player.disconnectTimer = null;
+        playersByToken.delete(player.token);
+        const stillThere = rooms.get(player.roomId);
+        console.log('玩家超时未重连，移出房间:', player.name);
+        detachFromRoom(player, stillThere, '离开了房间');
+        broadcastRoomList();
+    }, RECONNECT_GRACE_MS);
 }
 
 function broadcastToRoom(room, data) {
