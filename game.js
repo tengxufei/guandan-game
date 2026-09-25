@@ -96,6 +96,15 @@ document.addEventListener('DOMContentLoaded', () => {
     window.addEventListener('online', reconnectNow);
     window.addEventListener('pageshow', reconnectNow);
 
+    // 免费云主机（Render 等）在一段时间没有 HTTP 请求后会休眠，下次打开要等几十秒冷启动。
+    // WebSocket 的心跳走的是已经建立的连接，平台不一定算作"有访问"，
+    // 所以连着的时候每 4 分钟打一次 /healthz，保证打牌期间不会被休眠掐掉。
+    setInterval(() => {
+        if (!hasEnteredGame) return;
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        fetch('/healthz', { cache: 'no-store' }).catch(() => {});
+    }, 4 * 60 * 1000);
+
     // 问服务器这次部署要不要密码（局域网自己玩通常不设）
     fetch('/config').then(r => r.json()).then(cfg => {
         if (cfg.passwordRequired) {
