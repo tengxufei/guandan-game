@@ -130,8 +130,16 @@
 1. 代码推到 GitHub（已经在了）。
 2. 打开 [render.com](https://render.com) 注册，选 **New → Blueprint**，
    连上这个仓库。它会自动读取仓库里的 `render.yaml`。
-3. 部署时会让你填 `GAME_PASSWORD`，随便设一个家庭密码。
-4. 几分钟后拿到一个 `https://xxx.onrender.com` 的网址，发到家庭群里。
+3. **手动设置密码**：进服务页面 → 左侧 **Environment** → **Add Environment
+   Variable**，填 `GAME_PASSWORD` = 你们的家庭密码，保存后会自动重新部署。
+
+   > `render.yaml` 里这个变量标了 `sync: false`（值不从仓库同步，避免密码
+   > 进版本库）。Render 只在**首次创建**服务时才弹窗让你填；如果是把
+   > Blueprint 关联到已有服务，它不会问，必须自己去后台加。
+
+4. 拿到 `https://xxx.onrender.com` 网址。**发给家人之前**先打开
+   `https://xxx.onrender.com/config` 确认返回 `{"passwordRequired":true}`，
+   否则网站是完全敞开的，谁都能进。
 
 注意：免费套餐在**一段时间没人访问后会休眠**，下次打开要等几十秒冷启动。
 打牌过程中连接是活的，不会中途休眠。具体额度和条款以 Render 当前页面为准。
