@@ -1,0 +1,29 @@
+# Fly.io 配置。首次部署：fly launch --no-deploy 然后 fly deploy
+# 设密码：fly secrets set GAME_PASSWORD=你们的密码
+app = "guandan-game"
+primary_region = "hkg"   # 香港，离国内近；也可换成 nrt(东京) sin(新加坡) sjc(美西)
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "3000"
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_stop_machines = false   # 别自动停机，否则打到一半会断
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "connections"
+    soft_limit = 200
+    hard_limit = 250
+
+[[http_service.checks]]
+  interval = "30s"
+  timeout = "5s"
+  grace_period = "10s"
+  method = "GET"
+  path = "/healthz"

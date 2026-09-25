@@ -69,6 +69,13 @@ input[type=text]:focus { border-color: var(--green); }
 .divider::before { content: ''; position: absolute; top: 50%; left: 0; right: 0; height: 1px; background: #e3e8ee; }
 .divider span { background: #fff; padding: 0 12px; position: relative; }
 
+.login-error { color: #ff9b9b; font-size: .85rem; text-align: center; margin-top: 8px; }
+input[type=password] {
+    width: 100%; padding: 13px 14px; border: 2px solid #e3e8ee; border-radius: 10px;
+    font-size: 16px; outline: none; margin-top: 10px;
+}
+input[type=password]:focus { border-color: var(--green); }
+
 .join-row { display: flex; gap: 8px; }
 .join-row input { flex: 1; text-transform: uppercase; }
 

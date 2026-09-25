@@ -96,6 +96,16 @@ document.addEventListener('DOMContentLoaded', () => {
     window.addEventListener('online', reconnectNow);
     window.addEventListener('pageshow', reconnectNow);
 
+    // 问服务器这次部署要不要密码（局域网自己玩通常不设）
+    fetch('/config').then(r => r.json()).then(cfg => {
+        if (cfg.passwordRequired) {
+            $('game-password').classList.remove('hidden');
+            const saved = loadStored('guandan-pw');
+            if (saved) $('game-password').value = saved;
+        }
+    }).catch(() => {});
+    $('game-password').addEventListener('keydown', (e) => { if (e.key === 'Enter') doLogin(); });
+
     // 页面刷新或被系统回收后重新打开：凭令牌自动回到原来的牌桌
     const savedName = loadStored('guandan-name');
     if (savedName && loadStored('guandan-token')) {
@@ -137,6 +147,9 @@ function doLogin() {
     const name = $('player-name').value.trim();
     if (!name) return toast('请先输入名字');
     myName = name;
+    const pw = $('game-password').value;
+    if (pw) saveStored('guandan-pw', pw);
+    $('login-error').classList.add('hidden');
     hasEnteredGame = true;
     connect();
 }
@@ -152,7 +165,10 @@ function connect() {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
 
-    ws = new WebSocket(`${wsUrl()}?name=${encodeURIComponent(myName)}&token=${encodeURIComponent(myToken())}`);
+    const pw = loadStored('guandan-pw');
+    ws = new WebSocket(`${wsUrl()}?name=${encodeURIComponent(myName)}`
+        + `&token=${encodeURIComponent(myToken())}`
+        + (pw ? `&pw=${encodeURIComponent(pw)}` : ''));
 
     ws.onopen = () => {
         reconnectTries = 0;
@@ -300,6 +316,17 @@ function handle(msg) {
             break;
         case 'game_over':
             showResult(msg.result);
+            break;
+        case 'auth_failed':
+            // 密码不对就别再自动重连了，否则会一直撞
+            hasEnteredGame = false;
+            saveStored('guandan-pw', '');
+            setConnBanner(false);
+            showScreen('login-screen');
+            $('game-password').classList.remove('hidden');
+            $('game-password').value = '';
+            $('login-error').textContent = msg.message || '密码不对';
+            $('login-error').classList.remove('hidden');
             break;
         case 'error':
             Sfx.play('error');

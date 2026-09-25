@@ -3,6 +3,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const crypto = require('crypto');
 
 const {
     LEVEL_ORDER, SHAPE_NAMES,
@@ -18,6 +19,18 @@ const RECONNECT_GRACE_MS = 3 * 60 * 1000;
 // 光靠 TCP 超时可能几分钟才发现，其他人就一直干等。
 // 定期 ping，没回应就判定掉线。
 const HEARTBEAT_MS = Number(process.env.HEARTBEAT_MS) || 15000;
+
+// 部署到公网后，谁都能打开这个网址、在大厅里看到并加入你们的房间。
+// 设了 GAME_PASSWORD 就必须输对密码才能进；留空则不校验（局域网自己玩时不用设）。
+const GAME_PASSWORD = (process.env.GAME_PASSWORD || '').trim();
+
+// 用摘要做定长比较，避免逐字符比较泄露长度/内容
+function passwordOk(input) {
+    if (!GAME_PASSWORD) return true;
+    const a = crypto.createHash('sha256').update(String(input || '')).digest();
+    const b = crypto.createHash('sha256').update(GAME_PASSWORD).digest();
+    return crypto.timingSafeEqual(a, b);
+}
 const ALLOWED_DECKS = [1, 2, 3];
 const DEFAULT_DECKS = 2; // 掼蛋标准就是两副牌：108张，3人正好每人36张
 
@@ -363,11 +376,25 @@ const STATIC_FILES = {
 };
 
 function serveStatic(req, res) {
+    const p = req.url.split('?')[0].split('#')[0];
+
+    // 云平台用来探活
+    if (p === '/healthz') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, rooms: rooms.size, players: players.size }));
+        return;
+    }
+    // 前端靠它知道要不要显示密码框（不会泄露密码本身）
+    if (p === '/config') {
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ passwordRequired: !!GAME_PASSWORD }));
+        return;
+    }
+
     // 不能用 new URL(req.url, `http://${req.headers.host}`)：
     // 随便发个 "Host: [" 就会抛 ERR_INVALID_URL，把整个服务进程弄挂。
     // 这里只需要路径，自己截即可。
-    const pathname = req.url.split('?')[0].split('#')[0];
-    const entry = STATIC_FILES[pathname];
+    const entry = STATIC_FILES[p];
 
     if (!entry) {
         res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
@@ -416,10 +443,19 @@ wss.on('connection', (ws, req) => {
     } catch (e) { /* 地址解析不了就用默认名，不该让连接失败 */ }
     const playerName = rawName.slice(0, 12) || '玩家';
 
-    const token = (() => {
-        try { return (new URL(req.url, 'http://localhost').searchParams.get('token') || '').slice(0, 64); }
-        catch (e) { return ''; }
+    const query = (() => {
+        try { return new URL(req.url, 'http://localhost').searchParams; }
+        catch (e) { return new URLSearchParams(); }
     })();
+    const token = (query.get('token') || '').slice(0, 64);
+
+    if (!passwordOk(query.get('pw'))) {
+        try {
+            ws.send(JSON.stringify({ type: 'auth_failed', message: '密码不对' }));
+        } catch (e) {}
+        ws.close(4001, 'bad password');
+        return;
+    }
 
     // 重连：如果这个令牌对应的玩家还在某个房间里，就把他接回原来的座位
     const returning = token ? playersByToken.get(token) : null;
